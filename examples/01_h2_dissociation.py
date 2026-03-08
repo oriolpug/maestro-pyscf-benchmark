@@ -74,7 +74,6 @@ def main():
 
     bond_lengths = np.arange(0.4, 2.6, 0.2)
     max_error = 0.0
-    prev_params = None
 
     for d in bond_lengths:
         mol = gto.M(atom=f"H 0 0 0; H 0 0 {d:.4f}", basis="sto-3g", verbose=0)
@@ -88,15 +87,12 @@ def main():
         # VQE on Maestro
         cas_vqe = mcscf.CASCI(hf_obj, 2, 2)
         cas_vqe.fcisolver = MaestroSolver(
-            ansatz="hardware_efficient",
-            ansatz_layers=3,
+            ansatz="uccsd",
             backend=backend,
             maxiter=300,
-            initial_point=prev_params,
             verbose=False,
         )
         vqe_e = cas_vqe.kernel()[0]
-        prev_params = cas_vqe.fcisolver.optimal_params
 
         error = abs(vqe_e - fci_e) * 1000  # mHa
         max_error = max(max_error, error)

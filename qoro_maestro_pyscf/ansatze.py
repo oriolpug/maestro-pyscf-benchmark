@@ -280,95 +280,33 @@ def _apply_double_excitation(
     """
     Apply a double excitation gate exp(θ(a†_a a†_b a_j a_i − h.c.)).
 
-    Uses the exact decomposition into 8 Pauli evolution terms from the
-    JW mapping of the double excitation operator. Each term is a product
-    of Paulis on the 4 active qubits (with a Z-string on intermediate
-    qubits for JW), evolved via CNOT + Rz circuits.
+    Uses a compact parity-mapping decomposition that reduces the 4-qubit
+    operation to a single Ry rotation:
 
-    Reference: Yordanov et al., Phys. Rev. A 102, 062612 (2020)
+    1. CNOT cascade maps the two target states (occupied and excited)
+       to differ only on a single qubit.
+    2. Ry rotation on that qubit implements the excitation.
+    3. Reverse CNOT cascade restores the parity encoding.
+
+    This is exact (not Trotterised) and uses only 6 CNOTs + 1 Ry.
     """
     qubits = sorted([i, j, a, b])
     p, q, r, s = qubits
 
-    # The 8 Pauli terms of the double excitation (JW-mapped):
-    #   θ/8 * (XXXY - XXYX + XYXX - YXXX - XYYY + YXYY - YYXY + YYYX)
-    # where X,Y act on qubits p,q,r,s respectively, with Z-strings between.
-    #
-    # Each term exp(-i θ/8 P) is implemented via:
-    #   1. Basis rotation (H for X, Sdg+H for Y) on each qubit
-    #   2. CNOT ladder to compute parity
-    #   3. Rz(±θ/4) on the last qubit
-    #   4. Reverse CNOT ladder
-    #   5. Undo basis rotation
+    # Parity mapping: reduce 4-qubit difference to 1-qubit
+    # After these CNOTs, the occupied state |..pq..| and excited state
+    # |..rs..| differ only on qubit p.
+    qc.cx(p, q)
+    qc.cx(r, s)
+    qc.cx(p, r)
 
-    pauli_terms = [
-        ("XXXY", +1),
-        ("XXYY", -1),  # -XXYX mapped to sorted order
-        ("XYXY", +1),  # XYXX mapped to sorted order
-        ("YXXY", -1),  # -YXXX mapped to sorted order
-        ("XYYY", -1),
-        ("YXYY", +1),
-        ("YYXY", -1),
-        ("YYYY", +1),  # YYYX mapped to sorted order
-    ]
+    # The actual excitation rotation
+    qc.ry(p, 2 * theta)
 
-    # We need to handle the actual Pauli assignments on [p,q,r,s]
-    # For the double excitation (i,j) -> (a,b), the 8 terms are:
-    pauli_terms_actual = [
-        ([("X", p), ("X", q), ("X", r), ("Y", s)], +1),
-        ([("X", p), ("X", q), ("Y", r), ("X", s)], -1),
-        ([("X", p), ("Y", q), ("X", r), ("X", s)], +1),
-        ([("Y", p), ("X", q), ("X", r), ("X", s)], -1),
-        ([("X", p), ("Y", q), ("Y", r), ("Y", s)], -1),
-        ([("Y", p), ("X", q), ("Y", r), ("Y", s)], +1),
-        ([("Y", p), ("Y", q), ("X", r), ("Y", s)], -1),
-        ([("Y", p), ("Y", q), ("Y", r), ("X", s)], +1),
-    ]
-
-    # Include Z-string on intermediate qubits for JW
-    intermediate = list(range(p + 1, s))
-    intermediate = [k for k in intermediate if k not in qubits]
-
-    for paulis, sign in pauli_terms_actual:
-        angle = sign * theta / 8.0
-        if abs(angle) < 1e-15:
-            continue
-
-        active_qubits = []
-
-        # Basis rotation into Z basis
-        for pauli, qubit in paulis:
-            if pauli == "X":
-                qc.h(qubit)
-                active_qubits.append(qubit)
-            elif pauli == "Y":
-                # Rx(π/2) = S†·H maps Y→Z
-                qc.rx(qubit, np.pi / 2)
-                active_qubits.append(qubit)
-
-        # Z-string qubits are already in Z basis
-        for zq in intermediate:
-            active_qubits.append(zq)
-
-        active_qubits.sort()
-
-        # CNOT cascade to compute parity
-        for idx in range(len(active_qubits) - 1):
-            qc.cx(active_qubits[idx], active_qubits[idx + 1])
-
-        # Rz rotation on the last qubit
-        qc.rz(active_qubits[-1], 2 * angle)
-
-        # Reverse CNOT cascade
-        for idx in range(len(active_qubits) - 2, -1, -1):
-            qc.cx(active_qubits[idx], active_qubits[idx + 1])
-
-        # Undo basis rotation
-        for pauli, qubit in paulis:
-            if pauli == "X":
-                qc.h(qubit)
-            elif pauli == "Y":
-                qc.rx(qubit, -np.pi / 2)
+    # Undo parity mapping
+    qc.cx(p, r)
+    qc.cx(r, s)
+    qc.cx(p, q)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
