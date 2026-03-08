@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Callable, Optional, Union
 
 import numpy as np
 from scipy.optimize import minimize
@@ -78,7 +78,16 @@ class MaestroSolver:
     Parameters
     ----------
     ansatz : str
-        Ansatz type: ``"hardware_efficient"`` or ``"uccsd"``.
+        Ansatz type: ``"hardware_efficient"``, ``"uccsd"``, ``"upccd"``,
+        ``"adapt"``, or ``"custom"``.
+    custom_ansatz : callable or QuantumCircuit or None
+        Required when ``ansatz="custom"``. Either a callable with signature
+        ``(params: np.ndarray, n_qubits: int, nelec: tuple[int,int]) → QuantumCircuit``
+        that is invoked every VQE iteration (e.g. for iterative QCC circuits),
+        or a pre-built ``QuantumCircuit`` for zero-parameter evaluation.
+    custom_ansatz_n_params : int or None
+        Number of variational parameters for the custom ansatz. Required
+        when ``custom_ansatz`` is a callable.
     ansatz_layers : int
         Number of layers (hardware-efficient ansatz only). Default: 2.
     optimizer : str
@@ -136,6 +145,12 @@ class MaestroSolver:
     license_key: Optional[str] = None
     initial_point: Optional[np.ndarray] = None
     verbose: bool = True
+
+    # --- Custom ansatz (QCC / user-defined) ---
+    custom_ansatz: Optional[
+        Union[Callable[[np.ndarray, int, tuple[int, int]], "QuantumCircuit"], "QuantumCircuit"]
+    ] = None
+    custom_ansatz_n_params: Optional[int] = None
 
     # --- ADAPT-VQE parameters ---
     adapt_threshold: float = 1e-3
@@ -232,7 +247,23 @@ class MaestroSolver:
         )
 
         # --- Determine parameter count ---
-        if self.ansatz == "uccsd":
+        if self.ansatz == "custom":
+            if self.custom_ansatz is None:
+                raise ValueError(
+                    "ansatz='custom' requires `custom_ansatz` to be set "
+                    "(a callable or QuantumCircuit)."
+                )
+            if callable(self.custom_ansatz):
+                if self.custom_ansatz_n_params is None:
+                    raise ValueError(
+                        "When `custom_ansatz` is a callable, "
+                        "`custom_ansatz_n_params` must be set."
+                    )
+                n_params = self.custom_ansatz_n_params
+            else:
+                # Pre-built circuit — zero variational parameters
+                n_params = 0
+        elif self.ansatz == "uccsd":
             n_params = uccsd_param_count(n_qubits, self._nelec)
         elif self.ansatz == "upccd":
             n_params = upccd_param_count(n_qubits, self._nelec)
@@ -286,7 +317,12 @@ class MaestroSolver:
 
         # --- Cost function ---
         def cost(params):
-            if self.ansatz == "uccsd":
+            if self.ansatz == "custom":
+                if callable(self.custom_ansatz):
+                    qc = self.custom_ansatz(params, n_qubits, self._nelec)
+                else:
+                    qc = self.custom_ansatz  # pre-built circuit
+            elif self.ansatz == "uccsd":
                 qc = uccsd_ansatz(params, n_qubits, self._nelec)
             elif self.ansatz == "upccd":
                 qc = upccd_ansatz(params, n_qubits, self._nelec)
@@ -339,7 +375,14 @@ class MaestroSolver:
             e_vqe = opt.fun
 
         # --- Build the final optimised circuit (for RDM reconstruction) ---
-        if self.ansatz == "uccsd":
+        if self.ansatz == "custom":
+            if callable(self.custom_ansatz):
+                self._optimal_circuit = self.custom_ansatz(
+                    self.optimal_params, n_qubits, self._nelec
+                )
+            else:
+                self._optimal_circuit = self.custom_ansatz
+        elif self.ansatz == "uccsd":
             self._optimal_circuit = uccsd_ansatz(
                 self.optimal_params, n_qubits, self._nelec
             )
@@ -520,6 +563,133 @@ class MaestroSolver:
 
         multip = np.sqrt(abs(ss) + 0.25) * 2  # 2S+1
         return float(ss), float(multip)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Advanced features (Izmaylov-lab workflows)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def evaluate_custom_paulis(
+        self,
+        pauli_terms: list[tuple[complex, str]],
+        circuit: Optional["QuantumCircuit"] = None,
+    ) -> float:
+        """
+        Evaluate a user-supplied Pauli Hamiltonian on the GPU.
+
+        Bypasses PySCF / OpenFermion Hamiltonian generation entirely.
+        Useful for measurement-reduction research (e.g. Hamiltonian
+        factorisation, covariance-based grouping).
+
+        Parameters
+        ----------
+        pauli_terms : list of (complex, str)
+            Each entry is ``(coefficient, pauli_string)`` where
+            ``pauli_string`` uses ``{I, X, Y, Z}`` characters,
+            e.g. ``[(0.5, "ZZII"), (-0.3, "IXYZ")]``.
+            Identity-only strings (``"IIII"``) are separated out and
+            accumulated as a scalar offset.
+        circuit : QuantumCircuit or None
+            Circuit to evaluate on. Defaults to the optimised circuit
+            from the most recent ``kernel()`` call.
+
+        Returns
+        -------
+        expectation : float
+            ⟨ψ|H_custom|ψ⟩ = Σ Re(cᵢ)·⟨Pᵢ⟩.
+
+        Raises
+        ------
+        RuntimeError
+            If no circuit is available (``kernel()`` not yet called and
+            ``circuit`` not provided).
+        """
+        from qoro_maestro_pyscf.expectation import evaluate_expectation
+
+        qc = circuit if circuit is not None else self._optimal_circuit
+        if qc is None:
+            raise RuntimeError(
+                "No circuit available. Run kernel() first or pass an "
+                "explicit `circuit` argument."
+            )
+        if self._config is None:
+            self._config = configure_backend(
+                use_gpu=(self.backend == "gpu"),
+                simulation=self.simulation,
+                mps_bond_dim=self.mps_bond_dim,
+                license_key=self.license_key,
+            )
+
+        # Separate identity terms from non-identity Pauli strings
+        identity_offset = 0.0
+        pauli_labels: list[str] = []
+        pauli_coeffs: list[float] = []
+
+        for coeff, label in pauli_terms:
+            if set(label) <= {"I"}:
+                identity_offset += float(np.real(coeff))
+            else:
+                pauli_labels.append(label)
+                pauli_coeffs.append(float(np.real(coeff)))
+
+        if not pauli_labels:
+            return identity_offset
+
+        exp_vals = evaluate_expectation(qc, pauli_labels, self._config)
+        coeffs = np.asarray(pauli_coeffs, dtype=float)
+        return identity_offset + float(np.dot(coeffs, exp_vals))
+
+    def get_final_statevector(
+        self,
+        circuit: Optional["QuantumCircuit"] = None,
+    ) -> np.ndarray:
+        """
+        Retrieve the exact statevector from the Maestro simulator.
+
+        Returns the full complex-amplitude vector (or MPS-contracted state)
+        after VQE convergence.  This is intended for fidelity benchmarking
+        against exact diagonalisation.
+
+        Parameters
+        ----------
+        circuit : QuantumCircuit or None
+            Circuit whose state to extract. Defaults to the optimised
+            circuit from the most recent ``kernel()`` call.
+
+        Returns
+        -------
+        statevector : np.ndarray, shape (2**n_qubits,)
+            Complex-valued amplitudes of the prepared state.
+
+        Raises
+        ------
+        RuntimeError
+            If no circuit is available.
+        """
+        import maestro
+
+        qc = circuit if circuit is not None else self._optimal_circuit
+        if qc is None:
+            raise RuntimeError(
+                "No circuit available. Run kernel() first or pass an "
+                "explicit `circuit` argument."
+            )
+        if self._config is None:
+            self._config = configure_backend(
+                use_gpu=(self.backend == "gpu"),
+                simulation=self.simulation,
+                mps_bond_dim=self.mps_bond_dim,
+                license_key=self.license_key,
+            )
+
+        kwargs = {
+            "simulator_type": self._config.simulator_type,
+            "simulation_type": self._config.simulation_type,
+        }
+        if self._config.mps_bond_dim is not None:
+            kwargs["max_bond_dimension"] = self._config.mps_bond_dim
+
+        sv = maestro.get_state_vector(qc, **kwargs)
+        return np.asarray(sv, dtype=np.complex128)
 
     def fix_spin_(self, shift: float = 0.2, ss: float | None = None):
         """

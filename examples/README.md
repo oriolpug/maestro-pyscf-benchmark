@@ -45,6 +45,8 @@ python full_workflow/full_workflow.py --gpu
 |---|--------|-------|:------:|-------------|
 | 9 | [09_upccd_paired_doubles.py](09_upccd_paired_doubles.py) | UpCCD vs UCCSD | 8 | Seniority-zero, paired doubles, parameter efficiency |
 | 11 | [11_adapt_vqe.py](11_adapt_vqe.py) | ADAPT-VQE | 8 | Adaptive circuit growing, operator pool, compact ansatze |
+| 12 | [12_custom_qcc.py](12_custom_qcc.py) | Custom QCC ansatz | 4 | Qubit Coupled Cluster, Pauli-word entanglers, custom ansatz injection |
+| 13 | [13_iterative_qcc_fidelity.py](13_iterative_qcc_fidelity.py) | Iterative QCC + fidelity | 4 | Iterative entangler screening, custom Pauli evaluation, statevector extraction |
 
 ### GPU Benchmarking
 

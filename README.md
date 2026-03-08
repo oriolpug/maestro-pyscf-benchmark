@@ -76,7 +76,9 @@ export MAESTRO_LICENSE_KEY="XXXX-XXXX-XXXX-XXXX"
 - **Automatic GPU→CPU fallback** when no GPU is available
 - **Drop-in PySCF solver** — implements the full `fcisolver` protocol (`kernel`, `make_rdm1`, `make_rdm1s`, `make_rdm12`, `make_rdm12s`)
 - **CASCI and CASSCF** support (CASCI recommended; CASSCF works but VQE convergence can be tricky in the macro-iteration loop)
-- **Multiple ansatze** — hardware-efficient, UCCSD, UpCCD, and ADAPT-VQE (adaptive circuit growing)
+- **Multiple ansatze** — hardware-efficient, UCCSD, UpCCD, ADAPT-VQE, and **custom** (inject any `QuantumCircuit` callable, e.g. QCC)
+- **Custom Pauli evaluation** — `evaluate_custom_paulis()` bypasses Hamiltonian generation for measurement-reduction research
+- **Raw state extraction** — `get_final_statevector()` for exact fidelity benchmarking against exact diagonalisation
 - **UHF support** — handles spin-unrestricted integrals
 - **Pre-computed amplitudes** — skip VQE with `maxiter=0` + `initial_point`
 - **State fidelity** — compare circuit states via `compute_state_fidelity()`
@@ -106,7 +108,7 @@ qoro_maestro_pyscf/
 
 ## Examples
 
-See the [examples/](examples/) directory for 11 worked examples and a full workflow notebook covering H₂ dissociation, LiH UCCSD, GPU benchmarking, MPS bond dimensions, CASSCF, NEVPT2, dipole moments, geometry optimisation, UpCCD paired doubles, GPU benchmarks, and ADAPT-VQE.
+See the [examples/](examples/) directory for 13 worked examples and a full workflow notebook covering H₂ dissociation, LiH UCCSD, GPU benchmarking, MPS bond dimensions, CASSCF, NEVPT2, dipole moments, geometry optimisation, UpCCD paired doubles, GPU benchmarks, ADAPT-VQE, custom QCC ansatze, and iterative QCC with fidelity benchmarking.
 
 ## License
 

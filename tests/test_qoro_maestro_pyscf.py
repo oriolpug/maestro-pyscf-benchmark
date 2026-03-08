@@ -336,6 +336,83 @@ class TestPropertiesUnit:
         assert coeffs.shape == (2, 2)
 
 
+
+class TestAdvancedFeaturesUnit:
+    """Test custom ansatz injection, evaluate_custom_paulis, and get_final_statevector."""
+
+    def test_custom_ansatz_fields(self):
+        """Setting ansatz='custom' with callable stores fields correctly."""
+        from qoro_maestro_pyscf import MaestroSolver
+
+        def my_ansatz(params, n_qubits, nelec):
+            return "fake_circuit"
+
+        solver = MaestroSolver(
+            ansatz="custom",
+            custom_ansatz=my_ansatz,
+            custom_ansatz_n_params=5,
+        )
+        assert solver.ansatz == "custom"
+        assert callable(solver.custom_ansatz)
+        assert solver.custom_ansatz_n_params == 5
+
+    def test_custom_ansatz_requires_callable(self):
+        """ansatz='custom' without custom_ansatz raises ValueError."""
+        from qoro_maestro_pyscf import MaestroSolver
+
+        solver = MaestroSolver(ansatz="custom")
+        # kernel needs integrals — use tiny dummies to trigger the validation
+        h1 = np.zeros((1, 1))
+        h2 = np.zeros((1, 1, 1, 1))
+        with pytest.raises(ValueError, match="custom_ansatz"):
+            solver.kernel(h1, h2, norb=1, nelec=(1, 0))
+
+    def test_custom_ansatz_requires_n_params(self):
+        """Callable custom_ansatz without n_params raises ValueError."""
+        from qoro_maestro_pyscf import MaestroSolver
+
+        solver = MaestroSolver(
+            ansatz="custom",
+            custom_ansatz=lambda p, nq, ne: None,
+        )
+        h1 = np.zeros((1, 1))
+        h2 = np.zeros((1, 1, 1, 1))
+        with pytest.raises(ValueError, match="custom_ansatz_n_params"):
+            solver.kernel(h1, h2, norb=1, nelec=(1, 0))
+
+    def test_evaluate_custom_paulis_no_circuit(self):
+        """evaluate_custom_paulis raises RuntimeError if no circuit is available."""
+        from qoro_maestro_pyscf import MaestroSolver
+
+        solver = MaestroSolver()
+        with pytest.raises(RuntimeError, match="No circuit available"):
+            solver.evaluate_custom_paulis([(0.5, "ZZ")])
+
+    def test_get_final_statevector_no_circuit(self):
+        """get_final_statevector raises RuntimeError if no circuit is available."""
+        from qoro_maestro_pyscf import MaestroSolver
+
+        solver = MaestroSolver()
+        with pytest.raises(RuntimeError, match="No circuit available"):
+            solver.get_final_statevector()
+
+    def test_custom_ansatz_prebuilt_n_params_zero(self):
+        """Pre-built circuit (non-callable) yields zero parameters."""
+        from qoro_maestro_pyscf import MaestroSolver
+
+        class FakeCircuit:
+            pass
+
+        solver = MaestroSolver(
+            ansatz="custom",
+            custom_ansatz=FakeCircuit(),
+        )
+        # The solver should accept this and determine n_params = 0
+        # We can't run kernel without Maestro, but verify the field is set
+        assert not callable(solver.custom_ansatz)
+        assert solver.custom_ansatz_n_params is None  # not required for pre-built
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Integration Tests — Require openfermion + numpy
 # ══════════════════════════════════════════════════════════════════════════════
@@ -499,7 +576,7 @@ class TestPackageExports:
     def test_version(self):
         import qoro_maestro_pyscf
         assert hasattr(qoro_maestro_pyscf, "__version__")
-        assert qoro_maestro_pyscf.__version__ == "0.3.0"
+        assert qoro_maestro_pyscf.__version__ == "0.4.0"
 
     def test_all_exports(self):
         import qoro_maestro_pyscf
