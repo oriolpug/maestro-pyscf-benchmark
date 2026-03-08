@@ -112,32 +112,36 @@ def integrals_to_qubit_hamiltonian(
             one_body[2 * p + 1, 2 * q + 1] = h1_b[p, q]  # β-β
 
     # --- Build spin-orbital two-body tensor ---
-    # PySCF delivers chemist notation (pq|rs).
-    # InteractionOperator expects physicist notation with the convention:
+    # PySCF delivers chemist notation: h2[p,q,r,s] = (pq|rs).
+    # OpenFermion's InteractionOperator uses physicist convention:
     #   H = Σ_{pq} h1[p,q] a†_p a_q
-    #     + 0.5 Σ_{pqrs} h2[p,q,r,s] a†_p a†_r a_s a_q
+    #     + Σ_{pqrs} two_body[p,q,r,s] a†_p a†_q a_s a_r
     #
-    # From chemist (pq|rs) we construct the spin-orbital two-body tensor.
+    # The correct mapping from chemist to InteractionOperator is:
+    #   two_body[p,q,r,s] = 0.5 * h2_chem[p,s,r,q]
+    #
+    # Verified against openfermionpyscf's MolecularData output.
     two_body = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
 
     for p in range(norb):
         for q in range(norb):
             for r in range(norb):
                 for s in range(norb):
-                    # αα block
-                    two_body[2*p, 2*q, 2*r, 2*s] = h2_aa[p, q, r, s]
-                    # ββ block
-                    two_body[2*p+1, 2*q+1, 2*r+1, 2*s+1] = h2_bb[p, q, r, s]
-                    # αβ block
-                    two_body[2*p, 2*q+1, 2*r+1, 2*s] = h2_ab[p, q, r, s]
-                    # βα block
-                    two_body[2*p+1, 2*q, 2*r, 2*s+1] = h2_ab[q, p, s, r]
+                    val = 0.5 * h2_aa[p, s, r, q]
+                    # αα
+                    two_body[2*p, 2*q, 2*r, 2*s] = val
+                    # ββ
+                    two_body[2*p+1, 2*q+1, 2*r+1, 2*s+1] = val
+                    # αβ
+                    two_body[2*p, 2*q+1, 2*r+1, 2*s] = val
+                    # βα
+                    two_body[2*p+1, 2*q, 2*r, 2*s+1] = val
 
     # --- Build InteractionOperator and apply Jordan-Wigner ---
     iop = InteractionOperator(
         constant=0.0,
         one_body_tensor=one_body,
-        two_body_tensor=0.5 * two_body,
+        two_body_tensor=two_body,
     )
     qubit_op = jordan_wigner(iop)
 
