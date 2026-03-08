@@ -17,7 +17,7 @@
 # along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Example 10 — Full Workflow: BeH₂ Insertion Reaction
+Example 9 — Full Workflow: BeH₂ Insertion Reaction
 =====================================================
 
 A complete computational chemistry workflow using qoro-maestro-pyscf:

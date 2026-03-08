@@ -17,7 +17,7 @@
 # along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Example 7 — NEVPT2 Perturbation Theory
+Example 6 — NEVPT2 Perturbation Theory
 =======================================
 
 Adds second-order perturbation theory (NEVPT2) on top of a CASSCF

@@ -17,7 +17,7 @@
 # along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Example 9 — Geometry Optimisation
+Example 8 — Geometry Optimisation
 ===================================
 
 Optimises the bond length of H₂ by minimising the CASCI energy as a

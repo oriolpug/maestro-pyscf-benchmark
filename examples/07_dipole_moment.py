@@ -17,7 +17,7 @@
 # along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Example 8 — Dipole Moment from VQE
+Example 7 — Dipole Moment from VQE
 ====================================
 
 Computes the molecular dipole moment of LiH from the VQE wavefunction.

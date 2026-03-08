@@ -17,7 +17,7 @@
 # along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Example 6 — CASSCF Orbital Optimisation
+Example 5 — CASSCF Orbital Optimisation
 ========================================
 
 Runs CASSCF (Complete Active Space Self-Consistent Field) where PySCF
