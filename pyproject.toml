@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qoro-maestro-pyscf"
+version = "0.1.0"
+description = "PySCF integration plugin for the Maestro quantum simulator (Qoro Quantum) — drop-in replacement for qiskit-nature-pyscf"
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Qoro Quantum", email = "info@qoroquantum.de"},
+]
+keywords = [
+    "quantum", "chemistry", "VQE", "PySCF", "Maestro", "GPU",
+    "CASCI", "CASSCF", "quantum computing", "simulation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "pyscf>=2.0",
+    "openfermion>=1.5",
+    "openfermionpyscf>=0.5",
+    "scipy>=1.7",
+    "numpy>=1.21",
+    "qoro-maestro",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage = "https://qoroquantum.de"
+Documentation = "https://qoroquantum.github.io/maestro/d7/d01/python_guide.html"
+Repository = "https://github.com/QoroQuantum/maestro-pyscf"
+Issues = "https://github.com/QoroQuantum/maestro-pyscf/issues"
+
+[tool.setuptools.packages.find]
+include = ["qoro_maestro_pyscf*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
