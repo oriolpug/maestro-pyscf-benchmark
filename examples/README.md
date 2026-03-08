@@ -10,7 +10,7 @@ cd examples/
 
 # Run any example
 python 01_h2_dissociation.py
-python 07_nevpt2.py --gpu
+python 06_nevpt2.py --gpu
 python full_workflow/full_workflow.py --gpu
 ```
 
@@ -28,18 +28,17 @@ python full_workflow/full_workflow.py --gpu
 
 | # | Script | Topic | Qubits | Key Concepts |
 |---|--------|-------|:------:|-------------|
-| 4 | [04_mps_bond_dimension.py](04_mps_bond_dimension.py) 🟢 | MPS GPU simulation | 8 | Bond dimension trade-offs, H₂O |
-| 5 | [05_statevector_vs_mps.py](05_statevector_vs_mps.py) 🟢 | Simulation modes | 4 | Accuracy vs performance comparison |
+| 4 | [04_mps_bond_dimension.py](04_mps_bond_dimension.py) 🟢 | MPS bond dimension trade-off | 12 | H₆ chain, statevector vs MPS, accuracy vs scale |
 
 ### Production Chemistry
 
 | # | Script | Topic | Qubits | Key Concepts |
 |---|--------|-------|:------:|-------------|
-| 6 | [06_casscf_orbital_opt.py](06_casscf_orbital_opt.py) 🟢 | CASSCF | 6 | Orbital optimisation, RDMs, CASCI vs CASSCF |
-| 7 | [07_nevpt2.py](07_nevpt2.py) 🟢 | Perturbation theory | 8 | Dynamic correlation, NEVPT2 on top of CASSCF |
-| 8 | [08_dipole_moment.py](08_dipole_moment.py) | Molecular properties | 4 | Dipole moments, natural orbital occupations |
-| 9 | [09_geometry_opt.py](09_geometry_opt.py) | Geometry optimisation | 4 | Equilibrium bond length, PES scan |
-| 10 | [full_workflow/](full_workflow/) 🟢 | Complete pipeline | 6 | BeH₂: HF → CASSCF → NEVPT2 → properties |
+| 5 | [05_casscf_orbital_opt.py](05_casscf_orbital_opt.py) 🟢 | CASSCF | 6 | Orbital optimisation, RDMs, CASCI vs CASSCF |
+| 6 | [06_nevpt2.py](06_nevpt2.py) 🟢 | Perturbation theory | 8 | Dynamic correlation, NEVPT2 on top of CASSCF |
+| 7 | [07_dipole_moment.py](07_dipole_moment.py) | Molecular properties | 4 | Dipole moments, natural orbital occupations |
+| 8 | [08_geometry_opt.py](08_geometry_opt.py) | Geometry optimisation | 4 | Equilibrium bond length, PES scan |
+| 9 | [full_workflow/](full_workflow/) 🟢 | Complete pipeline | 6 | BeH₂: HF → CASSCF → NEVPT2 → properties |
 
 ### 🟢 MPS-Recommended Examples
 
@@ -59,15 +58,15 @@ cas.fcisolver = MaestroSolver(
 )
 ```
 
-> **Note:** Examples 1–3, 8, and 9 use only 4 qubits — statevector is faster for these. MPS overhead isn't worth it below ~6 qubits.
+> **Note:** Examples 1–3, 7, and 8 use only 4 qubits — statevector is faster for these. MPS overhead isn't worth it below ~6 qubits.
 
 ## GPU vs CPU
 
 All examples support `--gpu` and `--cpu` flags:
 
 ```bash
-python 07_nevpt2.py --gpu    # NVIDIA GPU (requires license)
-python 07_nevpt2.py --cpu    # CPU fallback (no GPU needed)
+python 06_nevpt2.py --gpu    # NVIDIA GPU (requires license)
+python 06_nevpt2.py --cpu    # CPU fallback (no GPU needed)
 ```
 
 ## License Key
