@@ -97,4 +97,6 @@ def compute_energy(
         The expectation value of the Hamiltonian.
     """
     exp_vals = evaluate_expectation(circuit, pauli_labels, config)
+    # Coefficients are real for a Hermitian Hamiltonian (physical observable).
+    # We use .real to drop any floating-point imaginary noise from OpenFermion.
     return identity_offset + float(np.dot(pauli_coeffs.real, exp_vals))

@@ -13,7 +13,7 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/\>.
+# along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
 Test suite for qoro-maestro-pyscf.
@@ -27,7 +27,6 @@ Run:
     pytest tests/ -v
     pytest tests/ -v -k "unit"           # fast, no deps
     pytest tests/ -v -k "integration"    # requires openfermion
-    pytest tests/ -v -k "e2e"            # requires all deps
 """
 
 import numpy as np
@@ -35,7 +34,7 @@ import pytest
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Unit Tests — Pure logic, no external deps
+# Unit Tests — Pure logic, no external deps beyond numpy
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAnsatzeUnit:
@@ -43,43 +42,48 @@ class TestAnsatzeUnit:
 
     def test_hardware_efficient_param_count(self):
         from qoro_maestro_pyscf.ansatze import hardware_efficient_param_count
-        # 4 qubits, 2 layers → 4 * 2 * 2 = 16 params
         assert hardware_efficient_param_count(4, 2) == 16
         assert hardware_efficient_param_count(4, 1) == 8
         assert hardware_efficient_param_count(2, 3) == 12
 
     def test_uccsd_param_count_tuple(self):
         from qoro_maestro_pyscf.ansatze import uccsd_param_count
-        # H₂: 4 qubits, (1, 1) electrons
-        # occupied: [0, 1], virtual: [2, 3]
-        # singles: (0,2), (0,3), (1,2), (1,3) = 4
-        # doubles: C(2,2) * C(2,2) = 1 * 1 = 1
-        # total: 5
-        n_params = uccsd_param_count(4, (1, 1))
-        assert n_params == 5
+        # H₂: 4 qubits, (1,1) electrons
+        # occupied: [0,1], virtual: [2,3]
+        # singles: 4, doubles: 1, total: 5
+        assert uccsd_param_count(4, (1, 1)) == 5
 
     def test_uccsd_param_count_int(self):
         from qoro_maestro_pyscf.ansatze import uccsd_param_count
-        # nelec=2 → (1, 1); should match tuple version
         assert uccsd_param_count(4, 2) == uccsd_param_count(4, (1, 1))
 
     def test_excitation_enumeration(self):
         from qoro_maestro_pyscf.ansatze import _get_uccsd_excitations
         singles, doubles = _get_uccsd_excitations(4, (1, 1))
-        # All singles should be occupied → virtual
         for i, a in singles:
             assert i in [0, 1]  # occupied
             assert a in [2, 3]  # virtual
 
+    def test_excitation_counts_larger(self):
+        """6 qubits, (2, 1) electrons → more excitations."""
+        from qoro_maestro_pyscf.ansatze import _get_uccsd_excitations
+        singles, doubles = _get_uccsd_excitations(6, (2, 1))
+        assert len(singles) > 0
+        assert len(doubles) > 0
+        # All singles: occupied → virtual
+        occ = {0, 2, 1}  # α: 0,2; β: 1
+        vir = {4, 3, 5}  # α: 4; β: 3,5
+        for i, a in singles:
+            assert i in occ
+            assert a in vir
+
     def test_hf_circuit_builds(self):
         from qoro_maestro_pyscf.ansatze import hartree_fock_circuit
         qc = hartree_fock_circuit(4, (1, 1))
-        # Should successfully build a circuit object
         assert qc is not None
 
     def test_hf_circuit_int_nelec(self):
         from qoro_maestro_pyscf.ansatze import hartree_fock_circuit
-        # nelec=2 → (1, 1)
         qc = hartree_fock_circuit(4, 2)
         assert qc is not None
 
@@ -121,6 +125,12 @@ class TestAnsatzeUnit:
         qc = uccsd_ansatz(params, n_qubits, nelec)
         assert qc is not None
 
+    def test_uccsd_with_int_nelec(self):
+        from qoro_maestro_pyscf.ansatze import uccsd_ansatz, uccsd_param_count
+        n_params = uccsd_param_count(4, 2)
+        qc = uccsd_ansatz(np.zeros(n_params), 4, 2)
+        assert qc is not None
+
 
 class TestBackendsUnit:
     """Test backend configuration logic."""
@@ -140,7 +150,14 @@ class TestBackendsUnit:
         from qoro_maestro_pyscf.backends import set_license_key
         set_license_key("TEST-KEY-1234")
         assert os.environ["MAESTRO_LICENSE_KEY"] == "TEST-KEY-1234"
-        # Clean up
+        del os.environ["MAESTRO_LICENSE_KEY"]
+
+    def test_set_license_key_overwrite(self):
+        import os
+        from qoro_maestro_pyscf.backends import set_license_key
+        set_license_key("KEY-1")
+        set_license_key("KEY-2")
+        assert os.environ["MAESTRO_LICENSE_KEY"] == "KEY-2"
         del os.environ["MAESTRO_LICENSE_KEY"]
 
 
@@ -172,6 +189,53 @@ class TestRdmUnit:
         traced = trace_spin_rdm1(rdm1_a, rdm1_b)
         assert traced.shape == (norb, norb)
 
+    def test_trace_rdm2_symmetry(self):
+        """rdm2_ba should be the transpose of rdm2_ab."""
+        from qoro_maestro_pyscf.rdm import trace_spin_rdm2
+        norb = 2
+        rdm2_ab = np.random.rand(norb, norb, norb, norb)
+        rdm2_aa = np.zeros_like(rdm2_ab)
+        rdm2_bb = np.zeros_like(rdm2_ab)
+        traced = trace_spin_rdm2(rdm2_aa, rdm2_ab, rdm2_bb)
+        # Should be rdm2_ab + rdm2_ab.transpose(2,3,0,1)
+        expected = rdm2_ab + rdm2_ab.transpose(2, 3, 0, 1)
+        np.testing.assert_allclose(traced, expected)
+
+
+class TestPropertiesUnit:
+    """Test molecular property computation functions."""
+
+    def test_natural_orbitals_identity(self):
+        """Identity 1-RDM → occupations are all 1."""
+        from qoro_maestro_pyscf.properties import compute_natural_orbitals
+        rdm1 = np.eye(3)
+        occ, coeffs = compute_natural_orbitals(rdm1)
+        np.testing.assert_allclose(occ, [1.0, 1.0, 1.0], atol=1e-10)
+        assert coeffs.shape == (3, 3)
+
+    def test_natural_orbitals_sorting(self):
+        """Occupations should be sorted descending."""
+        from qoro_maestro_pyscf.properties import compute_natural_orbitals
+        rdm1 = np.diag([0.1, 1.9, 0.5])
+        occ, _ = compute_natural_orbitals(rdm1)
+        assert occ[0] >= occ[1] >= occ[2]
+        np.testing.assert_allclose(sorted(occ, reverse=True), occ, atol=1e-10)
+
+    def test_natural_orbitals_trace_preserved(self):
+        """Sum of occupations should equal trace of 1-RDM."""
+        from qoro_maestro_pyscf.properties import compute_natural_orbitals
+        rdm1 = np.array([[1.8, 0.1], [0.1, 0.2]])
+        occ, _ = compute_natural_orbitals(rdm1)
+        np.testing.assert_allclose(np.sum(occ), np.trace(rdm1), atol=1e-10)
+
+    def test_natural_orbitals_symmetric(self):
+        """Should work with symmetric matrices."""
+        from qoro_maestro_pyscf.properties import compute_natural_orbitals
+        rdm1 = np.array([[1.5, 0.3], [0.3, 0.5]])
+        occ, coeffs = compute_natural_orbitals(rdm1)
+        assert len(occ) == 2
+        assert coeffs.shape == (2, 2)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Integration Tests — Require openfermion + numpy
@@ -181,74 +245,75 @@ class TestHamiltonianIntegration:
     """Test Hamiltonian construction with OpenFermion."""
 
     def test_h2_hamiltonian_shape(self):
-        """Build a minimal 2-orbital Hamiltonian and verify output types."""
         from qoro_maestro_pyscf.hamiltonian import (
             integrals_to_qubit_hamiltonian,
-            qubit_op_to_pauli_list,
         )
         from openfermion import QubitOperator
-
         norb = 2
         h1 = np.random.rand(norb, norb)
-        h1 = (h1 + h1.T) / 2  # symmetrise
+        h1 = (h1 + h1.T) / 2
         h2 = np.random.rand(norb, norb, norb, norb)
-        h2 = (h2 + h2.transpose(1, 0, 3, 2)) / 2  # symmetrise
-
+        h2 = (h2 + h2.transpose(1, 0, 3, 2)) / 2
         qubit_op, identity_offset = integrals_to_qubit_hamiltonian(h1, h2, norb)
-
         assert isinstance(qubit_op, QubitOperator)
         assert isinstance(identity_offset, float)
-        assert len(qubit_op.terms) > 0  # should have non-trivial terms
+        assert len(qubit_op.terms) > 0
 
     def test_pauli_list_format(self):
-        """Verify Pauli labels are correct length and contain valid chars."""
         from qoro_maestro_pyscf.hamiltonian import (
             integrals_to_qubit_hamiltonian,
             qubit_op_to_pauli_list,
         )
-
         norb = 2
         n_qubits = 2 * norb
         h1 = np.eye(norb) * -1.0
         h2 = np.zeros((norb, norb, norb, norb))
-
         qubit_op, _ = integrals_to_qubit_hamiltonian(h1, h2, norb)
         identity_coeff, labels, coeffs = qubit_op_to_pauli_list(qubit_op, n_qubits)
-
         for label in labels:
             assert len(label) == n_qubits
             assert all(c in "IXYZ" for c in label)
-
         assert len(labels) == len(coeffs)
 
     def test_uhf_integrals(self):
-        """Verify UHF (tuple) integral format is handled."""
         from qoro_maestro_pyscf.hamiltonian import integrals_to_qubit_hamiltonian
-
         norb = 2
         h1_a = np.eye(norb) * -1.0
         h1_b = np.eye(norb) * -0.9
         h2_aa = np.zeros((norb, norb, norb, norb))
         h2_ab = np.zeros((norb, norb, norb, norb))
         h2_bb = np.zeros((norb, norb, norb, norb))
-
         qubit_op, _ = integrals_to_qubit_hamiltonian(
             (h1_a, h1_b), (h2_aa, h2_ab, h2_bb), norb
         )
         assert len(qubit_op.terms) > 0
 
-    def test_identity_operator(self):
-        """Zero integrals should produce mostly identity terms."""
+    def test_zero_integrals(self):
+        """Zero integrals → zero Hamiltonian."""
         from qoro_maestro_pyscf.hamiltonian import integrals_to_qubit_hamiltonian
-
         norb = 2
         h1 = np.zeros((norb, norb))
         h2 = np.zeros((norb, norb, norb, norb))
-
         qubit_op, identity_offset = integrals_to_qubit_hamiltonian(h1, h2, norb)
-        # All-zero integrals → zero Hamiltonian
         for term, coeff in qubit_op.terms.items():
             assert abs(coeff) < 1e-12
+
+    def test_hermitian_hamiltonian(self):
+        """Qubit Hamiltonian should be Hermitian (real coefficients for Paulis)."""
+        from qoro_maestro_pyscf.hamiltonian import (
+            integrals_to_qubit_hamiltonian,
+            qubit_op_to_pauli_list,
+        )
+        norb = 2
+        h1 = np.array([[- 1.25, 0.1], [0.1, -0.5]])
+        h2 = np.zeros((norb, norb, norb, norb))
+        h2[0, 0, 1, 1] = 0.6
+        h2[1, 1, 0, 0] = 0.6
+        qubit_op, _ = integrals_to_qubit_hamiltonian(h1, h2, norb)
+        _, labels, coeffs = qubit_op_to_pauli_list(qubit_op, 4)
+        # All Pauli coefficients should be real for a Hermitian Hamiltonian
+        for c in coeffs:
+            assert abs(c.imag) < 1e-10, f"Non-real coefficient: {c}"
 
 
 class TestMaestroSolverIntegration:
@@ -272,10 +337,7 @@ class TestMaestroSolverIntegration:
 
     def test_solver_mps_construction(self):
         from qoro_maestro_pyscf import MaestroSolver
-        solver = MaestroSolver(
-            simulation="mps",
-            mps_bond_dim=128,
-        )
+        solver = MaestroSolver(simulation="mps", mps_bond_dim=128)
         assert solver.simulation == "mps"
         assert solver.mps_bond_dim == 128
 
@@ -296,6 +358,21 @@ class TestMaestroSolverIntegration:
         solver = MaestroSolver()
         assert solver.approx_kernel == solver.kernel
 
+    def test_fix_spin_chaining(self):
+        from qoro_maestro_pyscf import MaestroSolver
+        solver = MaestroSolver()
+        result = solver.fix_spin_(shift=0.5, ss=0.0)
+        assert result is solver  # returns self for chaining
+        assert solver._spin_penalty_shift == 0.5
+        assert solver._spin_penalty_ss == 0.0
+
+    def test_fix_spin_defaults(self):
+        from qoro_maestro_pyscf import MaestroSolver
+        solver = MaestroSolver()
+        solver.fix_spin_()
+        assert solver._spin_penalty_shift == 0.2
+        assert solver._spin_penalty_ss == 0.0  # singlet
+
 
 class TestPackageExports:
     """Test that all public API is exported correctly."""
@@ -313,10 +390,27 @@ class TestPackageExports:
         from qoro_maestro_pyscf import set_license_key
         assert callable(set_license_key)
 
+    def test_properties_import(self):
+        from qoro_maestro_pyscf import compute_dipole_moment, compute_natural_orbitals
+        assert callable(compute_dipole_moment)
+        assert callable(compute_natural_orbitals)
+
     def test_version(self):
         import qoro_maestro_pyscf
         assert hasattr(qoro_maestro_pyscf, "__version__")
         assert qoro_maestro_pyscf.__version__ == "0.1.0"
+
+    def test_all_exports(self):
+        import qoro_maestro_pyscf
+        expected = {
+            "MaestroSolver",
+            "BackendConfig",
+            "configure_backend",
+            "set_license_key",
+            "compute_dipole_moment",
+            "compute_natural_orbitals",
+        }
+        assert expected.issubset(set(qoro_maestro_pyscf.__all__))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

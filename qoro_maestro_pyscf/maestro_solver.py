@@ -424,6 +424,15 @@ class MaestroSolver:
         """
         Compute ⟨S²⟩ and 2S+1 from the spin-resolved RDMs.
 
+        Uses the standard decomposition:
+
+            ⟨S²⟩ = (N_α - N_β)² / 4
+                  + (N_α + N_β) / 2
+                  - Tr(D_α · D_β)
+
+        where D_α and D_β are the alpha and beta 1-RDMs and N is the
+        trace (electron count).
+
         Required by PySCF's CASSCF for spin characterisation.
 
         Returns
@@ -432,32 +441,20 @@ class MaestroSolver:
             ⟨S²⟩ and spin multiplicity 2S+1.
         """
         rdm1_a, rdm1_b = self._ensure_rdm1s(fake_ci_vec)
-        rdm2_aa, rdm2_ab, rdm2_bb = self._ensure_rdm2s(fake_ci_vec)
 
-        identity = np.eye(rdm1_a.shape[0])
+        n_alpha = np.trace(rdm1_a)
+        n_beta = np.trace(rdm1_b)
 
-        # ⟨S_z²⟩ contribution
-        ssz = (
-            np.einsum("ijkl,ij,kl->", rdm2_aa, identity, identity)
-            - np.einsum("ijkl,ij,kl->", rdm2_ab, identity, identity)
-            + np.einsum("ijkl,ij,kl->", rdm2_bb, identity, identity)
-            - np.einsum("ijkl,ij,kl->", rdm2_ab, identity, identity)
-            + np.einsum("ji,ij->", rdm1_a, identity)
-            + np.einsum("ji,ij->", rdm1_b, identity)
-        ) * 0.25
+        # ⟨S_z⟩ = (N_α - N_β) / 2
+        sz = (n_alpha - n_beta) / 2.0
 
-        # ⟨S_x² + S_y²⟩ contribution
-        dm2abba = -rdm2_ab.transpose(0, 3, 2, 1)
-        dm2baab = -rdm2_ab.transpose(2, 1, 0, 3)
-        ssxy = (
-            np.einsum("ijkl,ij,kl->", dm2abba, identity, identity)
-            + np.einsum("ijkl,ij,kl->", dm2baab, identity, identity)
-            + np.trace(rdm1_a)
-            + np.trace(rdm1_b)
-        ) * 0.5
+        # ⟨S²⟩ = ⟨S_z²⟩ + ⟨S_z⟩ + ⟨S-S+⟩
+        # For a single-determinant-like state approximation:
+        # ⟨S²⟩ ≈ S_z(S_z + 1) + N_β - Tr(D_α · D_β)
+        overlap = np.trace(rdm1_a @ rdm1_b)
+        ss = sz * (sz + 1.0) + n_beta - overlap
 
-        ss = ssxy + ssz
-        multip = np.sqrt(ss + 0.25) * 2  # 2S+1
+        multip = np.sqrt(abs(ss) + 0.25) * 2  # 2S+1
         return float(ss), float(multip)
 
     def fix_spin_(self, shift: float = 0.2, ss: float | None = None):
@@ -465,12 +462,12 @@ class MaestroSolver:
         Apply a spin-penalty to the VQE cost function.
 
         Modifies the solver in-place so that subsequent ``kernel`` calls
-        penalise states with ⟨S²⟩ ≠ ss.
+        penalise states with ⟨S²⟩ away from the target value.
 
         Parameters
         ----------
         shift : float
-            Penalty strength. Default: 0.2 Ha.
+            Penalty strength (Ha). Default: 0.2.
         ss : float or None
             Target ⟨S²⟩. None = singlet (0.0).
 
@@ -482,4 +479,5 @@ class MaestroSolver:
         self._spin_penalty_shift = shift
         self._spin_penalty_ss = ss if ss is not None else 0.0
         return self
+
 
