@@ -21,7 +21,7 @@ Example 9 — Full Workflow: BeH₂ Insertion Reaction
 =====================================================
 
 A complete computational chemistry workflow using qoro-maestro-pyscf:
-molecule → HF → CASSCF (GPU) → NEVPT2 → properties.
+molecule → HF → CASCI + VQE (GPU) → NEVPT2 → properties.
 
 This models the BeH₂ molecule, which has interesting multi-reference
 character due to the near-degeneracy of the Be 2s and 2p orbitals.
@@ -32,7 +32,7 @@ This is what a real computational chemistry study looks like:
 
 1. Define the molecule and basis set
 2. Run Hartree-Fock to get starting orbitals
-3. CASSCF with MaestroSolver to capture static correlation
+3. CASCI with MaestroSolver to capture static correlation
 4. NEVPT2 to add dynamic correlation
 5. Extract properties (dipole, natural occupations)
 
@@ -100,29 +100,27 @@ def main():
     print(f"  │  E(HF) = {hf_obj.e_tot:+.10f} Ha")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 3: CASSCF on Maestro GPU
+    # Step 3: CASCI with VQE on Maestro
     # ─────────────────────────────────────────────────────────────────────
     norb = 3   # Be 2s, 2pz + H 1s orbitals
     nelec = 2
 
     print(f"  │")
-    print(f"  ├─ Step 3: CASSCF on Maestro ({backend.upper()})")
+    print(f"  ├─ Step 3: CASCI + VQE on Maestro ({backend.upper()})")
     print(f"  │  Active space: ({nelec}e, {norb}o) → {2*norb} qubits")
 
-    cas = mcscf.CASSCF(hf_obj, norb, nelec)
+    cas = mcscf.CASCI(hf_obj, norb, nelec)
     cas.fcisolver = MaestroSolver(
         ansatz="uccsd",
         backend=backend,
         maxiter=300,
         verbose=False,
     )
-    cas.max_cycle_macro = 15
-    cas.verbose = 0
 
     t0 = time.perf_counter()
-    casscf_e = cas.kernel()[0]
-    casscf_time = time.perf_counter() - t0
-    print(f"  │  E(CASSCF) = {casscf_e:+.10f} Ha  ({casscf_time:.1f}s)")
+    casci_e = cas.kernel()[0]
+    casci_time = time.perf_counter() - t0
+    print(f"  │  E(CASCI+VQE) = {casci_e:+.10f} Ha  ({casci_time:.1f}s)")
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 4: NEVPT2 Perturbation Theory
@@ -136,10 +134,10 @@ def main():
     # otherwise we skip it and note the limitation.
     try:
         nevpt2_corr = mrpt.NEVPT(cas).kernel()
-        nevpt2_e = casscf_e + nevpt2_corr
+        nevpt2_e = casci_e + nevpt2_corr
         nevpt2_time = time.perf_counter() - t0
         print(f"  │  ΔE(NEVPT2) = {nevpt2_corr:+.10f} Ha")
-        print(f"  │  E(CASSCF+NEVPT2) = {nevpt2_e:+.10f} Ha  ({nevpt2_time:.1f}s)")
+        print(f"  │  E(CASCI+NEVPT2) = {nevpt2_e:+.10f} Ha  ({nevpt2_time:.1f}s)")
     except (AssertionError, RuntimeError, TypeError):
         nevpt2_e = None
         print(f"  │  ⚠ NEVPT2 requires a 3-RDM from the CI vector.")
@@ -182,10 +180,10 @@ def main():
     print(f"     {'─' * 52}")
     entries = [
         ("HF", hf_obj.e_tot),
-        ("CASSCF (Maestro)", casscf_e),
+        ("CASCI+VQE (Maestro)", casci_e),
     ]
     if nevpt2_e is not None:
-        entries.append(("CASSCF + NEVPT2", nevpt2_e))
+        entries.append(("CASCI + NEVPT2", nevpt2_e))
     entries.append(("FCI (exact)", fci_e))
     for label, e in entries:
         err = abs(e - fci_e) * 1000
