@@ -39,7 +39,7 @@ python 10_full_workflow.py --gpu
 | 7 | [07_nevpt2.py](07_nevpt2.py) | Perturbation theory | Dynamic correlation, NEVPT2 on top of CASSCF |
 | 8 | [08_dipole_moment.py](08_dipole_moment.py) | Molecular properties | Dipole moments, natural orbital occupations |
 | 9 | [09_geometry_opt.py](09_geometry_opt.py) | Geometry optimisation | Equilibrium bond length, PES scan |
-| 10 | [10_full_workflow.py](10_full_workflow.py) | Complete pipeline | BeH₂: HF → CASSCF → NEVPT2 → properties |
+| 10 | [full_workflow/](full_workflow/) | Complete pipeline | BeH₂: HF → CASSCF → NEVPT2 → properties |
 
 ## GPU vs CPU
 

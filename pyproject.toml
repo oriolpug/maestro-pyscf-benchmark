@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.9"
 authors = [
-    {name = "Qoro Quantum", email = "info@qoroquantum.de"},
+    {name = "Qoro Quantum Ltd.", email = "info@qoroquantum.de"},
 ]
 keywords = [
     "quantum", "chemistry", "VQE", "PySCF", "Maestro", "GPU",
