@@ -59,11 +59,15 @@ def evaluate_expectation(
     if not pauli_labels:
         return np.array([], dtype=float)
 
-    result = circuit.estimate(
-        observables=pauli_labels,
-        simulator_type=config.simulator_type,
-        simulation_type=config.simulation_type,
-    )
+    estimate_kwargs = {
+        "observables": pauli_labels,
+        "simulator_type": config.simulator_type,
+        "simulation_type": config.simulation_type,
+    }
+    if config.mps_bond_dim is not None:
+        estimate_kwargs["max_bond_dimension"] = config.mps_bond_dim
+
+    result = circuit.estimate(**estimate_kwargs)
 
     return np.array(result["expectation_values"], dtype=float)
 

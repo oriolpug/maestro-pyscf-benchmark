@@ -17,34 +17,28 @@
 # along with qoro-maestro-pyscf. If not, see <https://www.gnu.org/licenses/>.
 
 """
-Example 4 — Statevector vs MPS Simulation Modes
-=================================================
+Example 4 — Statevector vs MPS: Bond Dimension Trade-off
+==========================================================
 
-Compares Maestro's two simulation backends — exact statevector and
-MPS (Matrix Product State) — on the same VQE problem.
+Demonstrates when MPS bond dimension χ actually matters by comparing
+statevector (exact) and MPS (approximate) simulations on a **12-qubit**
+hydrogen chain.
 
-What is MPS simulation?
------------------------
-Statevector stores all 2^N amplitudes, limiting you to ~25-30 qubits.
-MPS compresses the state into a tensor chain with bond dimension χ:
+Key insight
+-----------
+MPS is exact when χ ≥ 2^(N/2). For 12 qubits, that means χ ≥ 64.
+Below that threshold, MPS is an approximation — you trade accuracy for
+the ability to simulate larger systems (50-100+ qubits on a single GPU).
 
-    χ = 2^(N/2)   → exact (equivalent to statevector)
-    χ < 2^(N/2)   → approximate, but much cheaper for large N
+This example shows:
+  • χ = 4   → lossy, noticeably worse than statevector
+  • χ = 16  → good approximation, close to statevector
+  • χ = 64  → exact, matches statevector
 
-For chemistry VQE circuits, which use local entangling gates (CNOT
-ladders), MPS is remarkably efficient. Maestro runs MPS on the GPU,
-enabling 50-100+ qubit simulations on a single card.
-
-What this example shows
------------------------
-We run the *same* VQE on LiH using both backends and compare:
-
-1. **Accuracy** — do they find the same energy?
-2. **Chemistry** — do they both achieve chemical accuracy vs FCI?
-
-Since LiH (4 qubits) has low entanglement, both modes should agree.
-For larger systems (>20 qubits), MPS gives a practical speedup while
-statevector becomes infeasible.
+Molecule
+--------
+H₆ linear chain (STO-3G) at 1.5 Å spacing — a stretched geometry with
+significant multi-reference character, making it a challenging test.
 
 Usage
 -----
@@ -55,13 +49,14 @@ Usage
 import argparse
 import time
 
+import numpy as np
 from pyscf import gto, scf, mcscf
 from qoro_maestro_pyscf import MaestroSolver
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Statevector vs MPS comparison"
+        description="Statevector vs MPS on H₆ (12 qubits)"
     )
     parser.add_argument("--gpu", action="store_true", help="Use GPU backend")
     parser.add_argument("--cpu", dest="gpu", action="store_false")
@@ -71,24 +66,23 @@ def main():
     backend = "gpu" if args.gpu else "cpu"
 
     print("=" * 72)
-    print("  STATEVECTOR vs MPS SIMULATION MODES")
+    print("  STATEVECTOR vs MPS — BOND DIMENSION TRADE-OFF")
     print(f"  Backend: {backend.upper()}")
     print("=" * 72)
 
-    # --- Molecule: LiH ---
-    mol = gto.M(
-        atom="Li 0 0 0; H 0 0 1.6",
-        basis="sto-3g",
-        verbose=0,
-    )
+    # --- Molecule: H₆ linear chain ---
+    spacing = 1.5  # Å — stretched to enhance correlation
+    atoms = "; ".join(f"H 0 0 {i * spacing:.4f}" for i in range(6))
+    mol = gto.M(atom=atoms, basis="sto-3g", verbose=0)
     hf_obj = scf.RHF(mol).run()
 
-    norb = 2
-    nelec = 2
+    norb = 6
+    nelec = 6
     n_qubits = 2 * norb
 
-    print(f"\n  Molecule        : LiH (STO-3G, d=1.6 Å)")
+    print(f"\n  Molecule        : H₆ chain (STO-3G, d={spacing} Å)")
     print(f"  Active space    : ({nelec}e, {norb}o) → {n_qubits} qubits")
+    print(f"  Max bond dim    : 2^{n_qubits//2} = {2**(n_qubits//2)}")
     print(f"  HF energy       : {hf_obj.e_tot:+.10f} Ha")
 
     # --- FCI baseline ---
@@ -97,49 +91,64 @@ def main():
     fci_e = cas_fci.kernel()[0]
     print(f"  FCI energy      : {fci_e:+.10f} Ha")
 
-    # --- Statevector VQE ---
-    print(f"\n  Running VQE with UCCSD ansatz...\n")
-    print(f"  {'Mode':<20s}  {'Energy':>14s}  {'Err (mHa)':>10s}  {'Chem.Acc':>8s}  {'Time':>8s}")
-    print("  " + "─" * 66)
+    # --- VQE runs ---
+    n_layers = 3
+    maxiter = 100
+
+    print(f"\n  Ansatz: {n_layers}-layer HWE, {maxiter} COBYLA iterations")
+    print(f"  (Using same random seed for fair comparison)\n")
+
+    print(f"  {'Mode':<20s}  {'Energy':>14s}  {'Err (mHa)':>10s}  {'vs SV':>10s}  {'Time':>8s}")
+    print("  " + "─" * 68)
+
+    # --- Statevector (exact reference) ---
+    np.random.seed(42)
+    x0 = np.random.default_rng(42).uniform(
+        -np.pi / 4, np.pi / 4, size=n_qubits * 2 * n_layers
+    )
 
     cas_sv = mcscf.CASCI(hf_obj, norb, nelec)
     cas_sv.fcisolver = MaestroSolver(
-        ansatz="uccsd",
+        ansatz="hardware_efficient",
+        ansatz_layers=n_layers,
         backend=backend,
-        maxiter=200,
+        maxiter=maxiter,
+        initial_point=x0.copy(),
         verbose=False,
     )
     t0 = time.perf_counter()
     sv_e = cas_sv.kernel()[0]
     sv_time = time.perf_counter() - t0
     sv_err = abs(sv_e - fci_e) * 1000
-    sv_acc = "✓" if sv_err < 1.6 else "✗"
-    print(f"  {'Statevector':<20s}  {sv_e:+14.8f}  {sv_err:10.2f}  {sv_acc:>8s}  {sv_time:7.2f}s")
+    print(f"  {'Statevector':<20s}  {sv_e:+14.8f}  {sv_err:10.2f}  {'(ref)':>10s}  {sv_time:7.1f}s")
 
-    # --- MPS VQE ---
-    for chi in [4, 16, 64]:
+    # --- MPS at various bond dimensions ---
+    for chi in [4, 8, 16, 32, 64]:
         cas_mps = mcscf.CASCI(hf_obj, norb, nelec)
         cas_mps.fcisolver = MaestroSolver(
-            ansatz="uccsd",
+            ansatz="hardware_efficient",
+            ansatz_layers=n_layers,
             backend=backend,
             simulation="mps",
             mps_bond_dim=chi,
-            maxiter=200,
+            maxiter=maxiter,
+            initial_point=x0.copy(),
             verbose=False,
         )
         t0 = time.perf_counter()
         mps_e = cas_mps.kernel()[0]
         mps_time = time.perf_counter() - t0
         mps_err = abs(mps_e - fci_e) * 1000
-        mps_acc = "✓" if mps_err < 1.6 else "✗"
-        print(f"  {'MPS (χ=' + str(chi) + ')':<20s}  {mps_e:+14.8f}  {mps_err:10.2f}  {mps_acc:>8s}  {mps_time:7.2f}s")
+        vs_sv = abs(mps_e - sv_e) * 1000  # difference from statevector
+        print(f"  {'MPS (χ=' + str(chi) + ')':<20s}  {mps_e:+14.8f}  {mps_err:10.2f}  {vs_sv:10.2f}  {mps_time:7.1f}s")
 
     print()
     print("  Key takeaways:")
-    print("  • Both modes achieve the same accuracy on small systems")
-    print("  • Statevector is limited to ~25 qubits (memory: 2^N amplitudes)")
-    print("  • MPS scales to 50-100+ qubits with GPU acceleration")
-    print("  • Use statevector for small systems, MPS for large ones")
+    print(f"  • 12 qubits → max bond dimension is {2**(n_qubits//2)}")
+    print("  • χ < max gives approximate results (vs SV column)")
+    print("  • χ = max reproduces statevector exactly")
+    print("  • For 50+ qubits, statevector is infeasible — MPS is the only option")
+    print("  • Maestro runs MPS on GPU for maximum throughput")
 
 
 if __name__ == "__main__":
