@@ -115,9 +115,8 @@ class TestSolverFieldsUnit:
         assert MaestroSolver(learning_rate=0.05).learning_rate == 0.05
 
     def test_grad_shift_default(self):
-        import math
         from qoro_maestro_pyscf import MaestroSolver
-        assert MaestroSolver().grad_shift == pytest.approx(math.pi / 2)
+        assert MaestroSolver().grad_shift == pytest.approx(1e-3)
 
     def test_adam_optimizer_field(self):
         """optimizer='adam' is accepted without errors."""

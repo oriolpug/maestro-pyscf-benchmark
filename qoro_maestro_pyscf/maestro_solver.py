@@ -174,7 +174,7 @@ class MaestroSolver:
     optimizer: str = "COBYLA"
     maxiter: int = 200
     learning_rate: float = 0.01
-    grad_shift: float = field(default_factory=lambda: np.pi / 2)
+    grad_shift: float = 1e-3
     backend: str = "gpu"
     simulation: str = "statevector"
     mps_bond_dim: int = 64
@@ -452,14 +452,17 @@ class MaestroSolver:
             shift = self.grad_shift
 
             for it in range(1, self.maxiter + 1):
-                # Parameter-shift gradient estimation
+                # Central finite-difference gradient estimation
+                # (exact parameter-shift rule only works for single-qubit
+                # rotation gates; for Trotterized UCC circuits we need
+                # standard finite differences with a small step)
                 grad = np.zeros_like(params)
                 for j in range(len(params)):
                     params_plus = params.copy()
                     params_minus = params.copy()
                     params_plus[j] += shift
                     params_minus[j] -= shift
-                    grad[j] = (cost(params_plus) - cost(params_minus)) / (2 * np.sin(shift))
+                    grad[j] = (cost(params_plus) - cost(params_minus)) / (2 * shift)
 
                 # Adam update
                 m = beta1 * m + (1 - beta1) * grad
