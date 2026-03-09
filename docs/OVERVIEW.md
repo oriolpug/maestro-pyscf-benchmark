@@ -82,6 +82,45 @@ MaestroSolver.save() / MaestroSolver.load()
 
 ---
 
+## Optimizers
+
+Three categories of optimizer are supported:
+
+| Category | `optimizer=` | Gradients | Notes |
+|----------|-------------|-----------|-------|
+| Derivative-free | `"COBYLA"`, `"Nelder-Mead"`, `"Powell"` | None | SciPy. Good for ≤20 params. |
+| Gradient-based (SciPy) | `"L-BFGS-B"`, `"CG"`, `"BFGS"` | Finite-diff (SciPy) | SciPy handles gradient estimation. |
+| **Adam** | `"adam"` | **Parameter-shift rule** | Built-in. Best for large param counts. |
+
+### Adam Optimizer
+
+When `optimizer="adam"`, the solver runs a custom optimisation loop with:
+
+1. **Parameter-shift gradients**: exact quantum gradients via the shift rule
+   ```
+   ∂E/∂θⱼ = [E(θⱼ + s) − E(θⱼ − s)] / (2 sin s)
+   ```
+   where `s = grad_shift` (default π/2, exact for Rx/Ry/Rz gates).
+
+2. **Adam update** (Kingma & Ba, 2015): momentum (β₁ = 0.9) + adaptive learning rate (β₂ = 0.999).
+
+3. **Best-energy tracking**: returns the lowest energy seen during training (not the final iterate), for robustness against oscillation.
+
+**Usage**:
+```python
+cas.fcisolver = MaestroSolver(
+    ansatz="uccsd",
+    optimizer="adam",
+    learning_rate=0.01,   # step size (default)
+    grad_shift=np.pi/2,   # parameter-shift offset (default, exact)
+    maxiter=300,
+)
+```
+
+**Cost**: each Adam iteration requires `2 × n_params` circuit evaluations (one forward + one backward shift per parameter). For 20 parameters and 300 iterations, that's 12,000 evaluations — fast on GPU, but consider `"COBYLA"` for quick prototyping.
+
+---
+
 ## Simulation Backends
 
 | Backend | `simulation=` | Best For | Notes |

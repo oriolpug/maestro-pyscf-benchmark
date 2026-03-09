@@ -93,9 +93,32 @@ class MaestroSolver:
     ansatz_layers : int
         Number of layers (hardware-efficient ansatz only). Default: 2.
     optimizer : str
-        SciPy minimiser method. Default: ``"COBYLA"``.
+        Optimiser method. Default: ``"COBYLA"``.
+
+        - **Derivative-free** (SciPy): ``"COBYLA"``, ``"Nelder-Mead"``,
+          ``"Powell"``
+        - **Gradient-based** (SciPy): ``"L-BFGS-B"``, ``"CG"``, ``"BFGS"``
+        - **Adam** (built-in): ``"adam"`` — uses the parameter-shift rule
+          to compute exact quantum gradients. Controlled by
+          ``learning_rate`` and ``grad_shift``.
     maxiter : int
         Maximum optimiser iterations. Default: 200.
+    learning_rate : float
+        Step size for the Adam optimiser. Ignored for SciPy methods.
+        Default: 0.01.
+    grad_shift : float
+        Shift value for the parameter-shift gradient rule.
+        Default: π/2 (exact for single-qubit rotation gates Rx, Ry, Rz).
+        For non-standard generators, set to a smaller value.
+    taper : bool
+        If True, apply Z₂ qubit tapering to reduce qubit count by ~2.
+        Default: False.
+    vqd_penalty : float
+        Overlap penalty strength β for VQD excited states. Only used
+        when ``nroots > 1``. Default: 5.0.
+    callback : callable or None
+        If provided, called at each VQE iteration with signature
+        ``(iteration: int, energy: float, params: np.ndarray) → None``.
     backend : str
         Backend selection: ``"gpu"`` or ``"cpu"``. Default: ``"gpu"``.
     simulation : str
@@ -134,6 +157,15 @@ class MaestroSolver:
     ...     ansatz_layers=3,
     ...     simulation="mps",
     ...     mps_bond_dim=128,
+    ... )
+
+    CASCI with Adam optimiser (gradient-based):
+
+    >>> cas.fcisolver = MaestroSolver(
+    ...     ansatz="uccsd",
+    ...     optimizer="adam",
+    ...     learning_rate=0.01,
+    ...     maxiter=300,
     ... )
     """
     # --- User-configurable ---
