@@ -42,7 +42,7 @@ mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
 hf = scf.RHF(mol).run()
 
 cas = mcscf.CASCI(hf, 2, 2)   # (2 electrons, 2 orbitals)
-cas.fcisolver = MaestroSolver(ansatz="uccsd")
+cas.fcisolver = MaestroSolver(ansatz="uccsd", maxiter=500)
 cas.run()
 ```
 
@@ -65,7 +65,7 @@ from qoro_maestro_pyscf import suggest_active_space_from_mp2
 norb, nelec, mo_coeff = suggest_active_space_from_mp2(hf)
 cas = mcscf.CASCI(hf, norb, nelec)
 cas.mo_coeff = mo_coeff
-cas.fcisolver = MaestroSolver(ansatz="uccsd")
+cas.fcisolver = MaestroSolver(ansatz="uccsd", maxiter=500)
 cas.run()
 ```
 
