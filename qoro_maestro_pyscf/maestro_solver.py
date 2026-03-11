@@ -75,7 +75,7 @@ class MaestroSolver:
     PySCF FCI-solver interface that runs a VQE on the Maestro simulator.
 
     Replaces PySCF's classical FCI solver with a quantum VQE algorithm
-    executed on Maestro's GPU-accelerated (or CPU) backend.
+    executed on Maestro's CPU or GPU-accelerated backend.
 
     Parameters
     ----------
@@ -120,7 +120,9 @@ class MaestroSolver:
         If provided, called at each VQE iteration with signature
         ``(iteration: int, energy: float, params: np.ndarray) → None``.
     backend : str
-        Backend selection: ``"gpu"`` or ``"cpu"``. Default: ``"gpu"``.
+        Backend selection: ``"cpu"`` or ``"gpu"``. Default: ``"cpu"``.
+        CPU works out of the box with no license. Switch to ``"gpu"``
+        for GPU acceleration (requires a Maestro license key).
     simulation : str
         Simulation mode: ``"statevector"`` or ``"mps"``. Default: ``"statevector"``.
     mps_bond_dim : int
@@ -137,24 +139,30 @@ class MaestroSolver:
 
     Examples
     --------
-    CASCI with GPU statevector:
+    CASCI with CPU (works out of the box, no license needed):
 
     >>> from pyscf import gto, scf, mcscf
     >>> from qoro_maestro_pyscf import MaestroSolver
     >>> mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
     >>> hf = scf.RHF(mol).run()
     >>> cas = mcscf.CASCI(hf, 2, 2)
-    >>> cas.fcisolver = MaestroSolver(
-    ...     ansatz="uccsd",
-    ...     license_key="XXXX-XXXX-XXXX-XXXX",  # or set MAESTRO_LICENSE_KEY env var
-    ... )
+    >>> cas.fcisolver = MaestroSolver(ansatz="uccsd")
     >>> cas.run()
 
-    CASCI with GPU MPS for larger active spaces:
+    Upgrade to GPU for faster simulation:
+
+    >>> cas.fcisolver = MaestroSolver(
+    ...     ansatz="uccsd",
+    ...     backend="gpu",
+    ...     license_key="XXXX-XXXX-XXXX-XXXX",  # or set MAESTRO_LICENSE_KEY env var
+    ... )
+
+    GPU MPS for larger active spaces:
 
     >>> cas.fcisolver = MaestroSolver(
     ...     ansatz="hardware_efficient",
     ...     ansatz_layers=3,
+    ...     backend="gpu",
     ...     simulation="mps",
     ...     mps_bond_dim=128,
     ... )
@@ -175,7 +183,7 @@ class MaestroSolver:
     maxiter: int = 200
     learning_rate: float = 0.01
     grad_shift: float = 1e-3
-    backend: str = "gpu"
+    backend: str = "cpu"
     simulation: str = "statevector"
     mps_bond_dim: int = 64
     license_key: Optional[str] = None
@@ -294,12 +302,13 @@ class MaestroSolver:
 
         if self.verbose:
             logger.info(
-                "[MaestroSolver] Backend: %s | Qubits: %d | Ansatz: %s",
+                "Maestro VQE: Backend=%s, Qubits=%d, Ansatz=%s",
                 self._config.label, n_qubits, self.ansatz,
             )
-            print(f"  [MaestroSolver] Backend : {self._config.label}")
-            print(f"  [MaestroSolver] Qubits  : {n_qubits}")
-            print(f"  [MaestroSolver] Ansatz  : {self.ansatz}")
+            print(f"\nCASCI VQE solver (Maestro)")
+            print(f"  Active space : ({sum(self._nelec)}e, {norb}o) → {n_qubits} qubits")
+            print(f"  Ansatz       : {self.ansatz}")
+            print(f"  Backend      : {self._config.label}")
 
         # --- Build qubit Hamiltonian from PySCF integrals ---
         qubit_op, _ = integrals_to_qubit_hamiltonian(h1, h2, norb)
@@ -314,7 +323,7 @@ class MaestroSolver:
             n_qubits = self._taper_result.tapered_n_qubits
             self._n_qubits = n_qubits
             if self.verbose:
-                print(f"  [MaestroSolver] Tapered  : "
+                print(f"  Tapered      : "
                       f"{self._taper_result.original_n_qubits} → {n_qubits} qubits")
 
         identity_offset, pauli_labels, pauli_coeffs = qubit_op_to_pauli_list(
@@ -336,8 +345,8 @@ class MaestroSolver:
             n_params = hardware_efficient_param_count(n_qubits, self.ansatz_layers)
 
         if self.verbose:
-            print(f"  [MaestroSolver] Params  : {n_params}")
-            print(f"  [MaestroSolver] Paulis  : {len(pauli_labels)}")
+            print(f"  Parameters   : {n_params}")
+            print(f"  Pauli terms  : {len(pauli_labels)}")
 
         # ──────────── ADAPT-VQE branch ────────────
         if self.ansatz == "adapt":
@@ -368,9 +377,9 @@ class MaestroSolver:
             e_tot = e_vqe + ecore
 
             if self.verbose:
-                print(f"  [MaestroSolver] ADAPT operators: {adapt_result['n_operators']}")
-                print(f"  [MaestroSolver] E(ADAPT) : {e_vqe:+.10f}")
-                print(f"  [MaestroSolver] E(total) : {e_tot:+.10f}")
+                print(f"  ADAPT operators: {adapt_result['n_operators']}")
+                print(f"  E(ADAPT) = {e_vqe:+.10f}  Ha")
+                print(f"  E(CASCI) = {e_tot:+.10f}  Ha")
 
             return e_tot, self
 
@@ -416,7 +425,7 @@ class MaestroSolver:
             self.energy_history.append(energy)
             iteration[0] += 1
             if self.verbose and (iteration[0] % 20 == 0 or iteration[0] == 1):
-                print(f"    iter {iteration[0]:4d}  |  E = {energy:+.10f}")
+                print(f"    iter {iteration[0]:4d}  E = {energy:+.10f}  Ha")
 
             if self.callback is not None:
                 self.callback(iteration[0], energy, params)
@@ -435,7 +444,7 @@ class MaestroSolver:
         # --- Pre-computed amplitudes mode (skip VQE) ---
         if self.maxiter == 0 and self.initial_point is not None:
             if self.verbose:
-                print("  [MaestroSolver] maxiter=0 — using pre-computed amplitudes (no VQE)")
+                print("  maxiter=0 — using pre-computed amplitudes (no VQE)")
             self.optimal_params = x0
             e_vqe = cost(x0)
             self.converged = True
@@ -523,10 +532,11 @@ class MaestroSolver:
         e_tot = e_vqe + ecore
 
         if self.verbose:
-            print(f"  [MaestroSolver] Converged : {self.converged}")
-            print(f"  [MaestroSolver] E(VQE)    : {e_vqe:+.10f}")
-            print(f"  [MaestroSolver] E(total)  : {e_tot:+.10f}")
-            print(f"  [MaestroSolver] Time      : {self.vqe_time:.2f}s")
+            n_iters = len(self.energy_history)
+            status = "converged" if self.converged else "not converged"
+            print(f"  VQE {status} in {n_iters} iterations")
+            print(f"  E(VQE)   = {e_vqe:+.10f}  Ha")
+            print(f"  E(CASCI) = {e_tot:+.10f}  Ha  ({self.vqe_time:.2f} s)")
 
         # --- Multi-root VQD (nroots > 1) ---
         if self.nroots > 1:

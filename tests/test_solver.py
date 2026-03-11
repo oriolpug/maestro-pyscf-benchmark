@@ -27,7 +27,7 @@ class TestSolverFieldsUnit:
         s = MaestroSolver()
         assert s.ansatz == "hardware_efficient"
         assert s.ansatz_layers == 2
-        assert s.backend == "gpu"
+        assert s.backend == "cpu"
         assert s.simulation == "statevector"
         assert s.taper is False
         assert s.vqd_penalty == 5.0

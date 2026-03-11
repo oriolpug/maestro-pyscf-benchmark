@@ -19,7 +19,7 @@ Example 5 — CASSCF Orbital Optimisation
 
 Runs CASSCF (Complete Active Space Self-Consistent Field) where PySCF
 optimises the molecular orbitals while MaestroSolver handles the CI problem
-on the GPU.
+on the Maestro simulator.
 
 Why CASSCF matters
 ------------------

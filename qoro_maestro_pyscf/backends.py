@@ -70,6 +70,7 @@ def set_license_key(key: str) -> None:
 
     Notes
     -----
+    - Get your key instantly at https://maestro.qoroquantum.net
     - First activation requires an internet connection (one-time).
     - Subsequent runs work offline for up to 30 days.
     - Contact team@qoroquantum.de for licensing issues.
@@ -85,7 +86,7 @@ def set_license_key(key: str) -> None:
 
 
 def configure_backend(
-    use_gpu: bool = True,
+    use_gpu: bool = False,
     simulation: str = "statevector",
     mps_bond_dim: int = 64,
     license_key: Optional[str] = None,
@@ -96,7 +97,8 @@ def configure_backend(
     Parameters
     ----------
     use_gpu : bool
-        Attempt to use the GPU backend. Falls back to CPU if unavailable.
+        If True, attempt to use the GPU backend (requires a license key).
+        Falls back to CPU if unavailable. Default: False (CPU).
     simulation : str
         Simulation mode: ``"statevector"`` or ``"mps"`` (Matrix Product State).
         MPS enables larger qubit counts when entanglement is bounded.
@@ -115,21 +117,17 @@ def configure_backend(
 
     Examples
     --------
-    GPU statevector (default, license from env var):
+    CPU statevector (default, no license needed):
 
     >>> cfg = configure_backend()
 
-    GPU statevector with explicit license:
+    GPU statevector (requires license):
 
-    >>> cfg = configure_backend(license_key="XXXX-XXXX-XXXX-XXXX")
+    >>> cfg = configure_backend(use_gpu=True, license_key="XXXX-XXXX-XXXX-XXXX")
 
     GPU MPS for larger circuits:
 
-    >>> cfg = configure_backend(simulation="mps", mps_bond_dim=128)
-
-    Force CPU (no license needed):
-
-    >>> cfg = configure_backend(use_gpu=False)
+    >>> cfg = configure_backend(use_gpu=True, simulation="mps", mps_bond_dim=128)
     """
     # --- Set license key if provided ---
     if license_key is not None:
@@ -154,7 +152,7 @@ def configure_backend(
         backend_label = f"GPU ({mode.value})"
     else:
         sim_backend = maestro.SimulatorType.QCSim
-        backend_label = f"CPU/QCSim ({mode.value})"
+        backend_label = f"CPU ({mode.value})"
 
     return BackendConfig(
         simulator_type=sim_backend,
