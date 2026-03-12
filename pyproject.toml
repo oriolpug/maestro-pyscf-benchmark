@@ -78,6 +78,7 @@ openfermion = ">=1.5"
 scipy = ">=1.7"
 numpy = ">=1.21"
 qoro-maestro = "*"
+qiskit-aer = "^0.17.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0"
