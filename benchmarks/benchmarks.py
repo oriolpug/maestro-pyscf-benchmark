@@ -64,8 +64,8 @@ from qoro_maestro_pyscf import MaestroSolver
 CACHE_DIR     = Path(__file__).parent / "cache"
 PLOTS_DIR     = Path(__file__).parent / "plots"
 GEO_DIR       = Path(__file__).parent / "geometries"
-CHEM_ACC_MHA  = 1.6    # mHa
-SV_QUBIT_LIMIT = 14    # Maestro statevector segfaults at 16q+
+CHEM_ACC_MHA   = 1.6   # mHa
+SV_QUBIT_LIMIT = 25    # Both Maestro and Qiskit switch to MPS above this qubit count
 
 
 # ── Benchmark configuration (swapped by --small) ─────────────────────────────
@@ -224,15 +224,17 @@ def _run_maestro(hf, norb, nelec, ansatz, backend, simulation=None,
 
 
 def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0) -> dict:
-    """Qiskit VQE via native Qiskit 2.x API (StatevectorEstimator + scipy SLSQP).
+    """Qiskit VQE via native Qiskit 2.x API (scipy SLSQP).
 
     ParityMapper(num_particles) reduces 2*norb qubits by 2.
+    Uses StatevectorEstimator when n_qubits_mapped <= SV_QUBIT_LIMIT,
+    otherwise switches to Aer MPS (qiskit_aer Estimator with
+    method='matrix_product_state').
     ecore is added back so the returned energy matches PySCF CASCI total energy.
     """
     def _do():
         from scipy.optimize import minimize as _minimize
         from pyscf import ao2mo as _ao2mo
-        from qiskit.primitives import StatevectorEstimator
         from qiskit_nature.second_q.hamiltonians import ElectronicEnergy
         from qiskit_nature.second_q.mappers import ParityMapper
         from qiskit_nature.second_q.problems import (
@@ -240,6 +242,7 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0) -> dict:
         from qiskit_nature.second_q.circuit.library import HartreeFock, PUCCD, UCCSD
 
         nalpha, nbeta = nelec if not isinstance(nelec, int) else (nelec // 2, nelec // 2)
+        n_qubits_mapped = 2 * norb - 2  # ParityMapper(num_particles) reduces by 2
 
         cas_obj = mcscf.CASCI(hf, norb, (nalpha, nbeta)); cas_obj.verbose = 0
         h1, ecore = cas_obj.get_h1eff()
@@ -259,12 +262,28 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0) -> dict:
         ansatz = (UCCSD if ansatz_type == "UCCSD" else PUCCD)(
             norb, (nalpha, nbeta), mapper, initial_state=hf_state)
 
-        n_params  = ansatz.num_parameters
-        estimator = StatevectorEstimator()
+        n_params = ansatz.num_parameters
 
-        def _energy(params):
-            bound = ansatz.assign_parameters(params)
-            return float(estimator.run([(bound, qubit_op)]).result()[0].data.evs)
+        if n_qubits_mapped <= SV_QUBIT_LIMIT:
+            from qiskit.primitives import StatevectorEstimator
+            sv_est = StatevectorEstimator()
+
+            def _energy(params):
+                bound = ansatz.assign_parameters(params)
+                return float(sv_est.run([(bound, qubit_op)]).result()[0].data.evs)
+
+            simulation = "statevector"
+        else:
+            from qiskit_aer.primitives import Estimator as AerEstimator
+            aer_est = AerEstimator()
+            aer_est.set_options(method="matrix_product_state")
+            params_order = list(ansatz.parameters)
+
+            def _energy(params):
+                job = aer_est.run([ansatz], [qubit_op], [list(params)])
+                return float(job.result().values[0])
+
+            simulation = "mps"
 
         t0 = time.perf_counter()
         opt = _minimize(_energy, np.zeros(n_params), method="SLSQP",
@@ -272,7 +291,9 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0) -> dict:
         return {"status": "ok", "energy": opt.fun + ecore,
                 "time": time.perf_counter() - t0,
                 "n_params": n_params, "n_iter": opt.nit,
-                "converged": bool(opt.success)}
+                "converged": bool(opt.success),
+                "simulation": simulation,
+                "n_qubits": n_qubits_mapped}
 
     try:
         return _timed(_do, timeout_s) if timeout_s > 0 else _do()
@@ -430,11 +451,11 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
         nelec    = (norb // 2, norb // 2)
         n_qubits = 2 * norb
 
-        if callable(hf_or_builder):
+        if isinstance(hf_or_builder, scf.hf.SCF):
+            hf = hf_or_builder
+        else:
             mol = hf_or_builder(norb)
             hf  = _run_hf(mol)
-        else:
-            hf = hf_or_builder
 
         e_fci, t_fci = _run_fci(hf, norb, nelec, timeout_s=fci_timeout)
         fci_str = f"{t_fci:.1f}s" if t_fci is not None else f">{fci_timeout}s (TO)"
