@@ -41,8 +41,15 @@ import signal
 import sys
 import time
 import traceback
+import warnings
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from scipy.sparse import SparseEfficiencyWarning
+    warnings.filterwarnings("ignore", category=SparseEfficiencyWarning)
+except ImportError:
+    pass
 
 import matplotlib
 import matplotlib.pyplot as plt
