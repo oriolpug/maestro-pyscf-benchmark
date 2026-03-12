@@ -194,7 +194,7 @@ def _run_fci(hf, norb, nelec, timeout_s=60) -> tuple[float | None, float | None]
 
 
 def _run_maestro(hf, norb, nelec, ansatz, backend, simulation=None,
-                 mps_bond_dim=128, timeout_s=0, **kwargs) -> dict:
+                 mps_bond_dim=64, timeout_s=0, **kwargs) -> dict:
     n_qubits = 2 * norb
     if simulation is None:
         simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
@@ -223,7 +223,7 @@ def _run_maestro(hf, norb, nelec, ansatz, backend, simulation=None,
                 "traceback": traceback.format_exc()}
 
 
-def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0) -> dict:
+def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0, mps_bond_dim: int = 64) -> dict:
     """Qiskit VQE via native Qiskit 2.x API (scipy SLSQP).
 
     ParityMapper(num_particles) reduces 2*norb qubits by 2.
@@ -274,9 +274,9 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0) -> dict:
 
             simulation = "statevector"
         else:
-            from qiskit_aer.primitives import Estimator as AerEstimator
+            from qiskit_aer.primitives import EstimatorV2 as AerEstimator
             aer_est = AerEstimator()
-            aer_est.set_options(method="matrix_product_state")
+            aer_est.set_options(method="matrix_product_state", matrix_product_state_max_bond_dimension=mps_bond_dim)
             params_order = list(ansatz.parameters)
 
             def _energy(params):
@@ -514,7 +514,7 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
 
             print(f"  Qiskit PUCCD ...", end="", flush=True)
             qk = _run_qiskit_vqe(hf, main_norb, main_nelec, "PUCCD",
-                                  timeout_s=cfg.main_qiskit_timeout)
+                                  timeout_s=cfg.main_qiskit_timeout, mps_bond_dim=cfg.mps_bond_dim)
             e_qk = qk.get("energy") if _ok(qk) else None
             if _ok(qk):
                 print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
