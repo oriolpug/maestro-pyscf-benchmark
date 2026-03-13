@@ -275,13 +275,16 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0, mps_bond_
             simulation = "statevector"
         else:
             from qiskit_aer.primitives import EstimatorV2 as AerEstimator
+            from qiskit_aer import AerSimulator
+            from qiskit import transpile
             aer_est = AerEstimator()
             aer_est.options.backend_options["method"] = "matrix_product_state"
             aer_est.options.backend_options["matrix_product_state_max_bond_dimension"] = mps_bond_dim
-            params_order = list(ansatz.parameters)
+            aer_sim = AerSimulator(method="matrix_product_state")
+            ansatz_t = transpile(ansatz, backend=aer_sim, optimization_level=0)
 
             def _energy(params):
-                job = aer_est.run([(ansatz, qubit_op, list(params))])
+                job = aer_est.run([(ansatz_t, qubit_op, list(params))])
                 return float(job.result()[0].data.evs)
 
             simulation = "mps"
