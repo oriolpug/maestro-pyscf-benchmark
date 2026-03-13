@@ -281,8 +281,8 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0, mps_bond_
             params_order = list(ansatz.parameters)
 
             def _energy(params):
-                job = aer_est.run([ansatz], [qubit_op], [list(params)])
-                return float(job.result().values[0])
+                job = aer_est.run([(ansatz, qubit_op, list(params))])
+                return float(job.result()[0].data.evs)
 
             simulation = "mps"
 
