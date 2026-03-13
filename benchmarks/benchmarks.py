@@ -65,7 +65,7 @@ CACHE_DIR     = Path(__file__).parent / "cache"
 PLOTS_DIR     = Path(__file__).parent / "plots"
 GEO_DIR       = Path(__file__).parent / "geometries"
 CHEM_ACC_MHA   = 1.6   # mHa
-SV_QUBIT_LIMIT = 25    # Both Maestro and Qiskit switch to MPS above this qubit count
+SV_QUBIT_LIMIT = 15    # Both Maestro and Qiskit switch to MPS above this qubit count
 
 
 # ── Benchmark configuration (swapped by --small) ─────────────────────────────
