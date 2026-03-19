@@ -72,10 +72,11 @@ SV_QUBIT_LIMIT = 15    # Both Maestro and Qiskit switch to MPS above this qubit 
 
 @dataclasses.dataclass
 class BenchmarkConfig:
-    # Case 1: N₂ PES
-    n2_distances:       list        # bond lengths to sample
+    # Case 1: N₂ scaling sweep (fixed geometry)
+    n2_norb_sweep:      list        # active-space sizes to sweep
+    n2_fci_timeout:     int         # seconds per FCI call
     n2_maxiter:         int         # Maestro VQE maxiter
-    n2_qiskit_timeout:  int         # seconds
+    n2_qiskit_timeout:  int         # seconds per Qiskit VQE call
 
     # Case 2: Cr₂
     cr2_maxiter:        int
@@ -99,7 +100,8 @@ class BenchmarkConfig:
 
 
 FULL = BenchmarkConfig(
-    n2_distances        = [1.098, 1.6, 2.5],
+    n2_norb_sweep       = [2, 6, 10, 14, 18, 22],
+    n2_fci_timeout      = 3600,
     n2_maxiter          = 300,
     n2_qiskit_timeout   = 300,
 
@@ -117,12 +119,13 @@ FULL = BenchmarkConfig(
     sweep_fci_timeout   = 30,
     sweep_qiskit_timeout = 180,
 
-    mps_bond_dim        = 128,
+    mps_bond_dim        = 32,
 )
 
 SMALL = BenchmarkConfig(
-    # Reduced bond lengths and iterations for fast local prototyping
-    n2_distances        = [1.098, 2.5],    # 2 geometries instead of 3
+    # Reduced sweep and iterations for fast local prototyping
+    n2_norb_sweep       = [2, 4, 6, 8],   # 4 points instead of 7
+    n2_fci_timeout      = 20,
     n2_maxiter          = 100,
     n2_qiskit_timeout   = 60,
 
@@ -330,54 +333,44 @@ def _ok(d): return isinstance(d, dict) and d.get("status") == "ok"
 # ── Case 1: N₂ dissociation ───────────────────────────────────────────────────
 
 def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
-    """N₂ CAS(10e,8o) cc-pvdz — PES across bond lengths."""
-    norb, nelec = 8, (5, 5)
-    n_qubits    = 2 * norb          # 16q → Maestro MPS; Qiskit parity → 14q
-    distances   = cfg.n2_distances
-    records     = []
+    """N₂ cc-pvdz — active-space scaling sweep at equilibrium geometry (d = 1.098 Å).
 
-    print(f"\n[Case 1] N₂ Dissociation  CAS({sum(nelec)}e,{norb}o) = {n_qubits}q  cc-pvdz")
-    print(f"  bond lengths: {distances}")
-    print(f"  {'d(Å)':>6}  {'HF':>12}  {'CCSD(T)':>12}  {'FCI':>12}  "
-          f"{'Qiskit':>12}  {'Maestro':>12}  {'err_Qk':>8}  {'err_M':>8}")
+    Sweeps norb from small (FCI trivial) through large (FCI intractable, needs MPS/quantum).
+    nelec = (norb//2, norb//2) throughout; ParityMapper maps 2*norb → 2*norb-2 qubits.
+    """
+    d_eq  = 1.098
+    norb_sweep = cfg.n2_norb_sweep
+    main_norb  = norb_sweep[-1]
+    main_nelec = (main_norb // 2, main_norb // 2)
 
-    for d in distances:
-        mol = gto.M(atom=f"N 0 0 0; N 0 0 {d}", basis="cc-pvdz", spin=0, verbose=0)
-        hf  = _run_hf(mol)
-        e_ccsdt, t_ccsdt = _run_ccsdt(hf)
-        e_fci,   t_fci   = _run_fci(hf, norb, nelec, timeout_s=60)
-        ref     = e_fci if e_fci is not None else e_ccsdt
-        ref_lbl = "FCI"  if e_fci is not None else "CCSD(T)"
+    print(f"\n[Case 1] N₂ Scaling Sweep  d={d_eq} Å  cc-pvdz")
+    print(f"  norb sweep: {norb_sweep}  (qubits: {[2*n for n in norb_sweep]})")
+    print(f"  SV_QUBIT_LIMIT={SV_QUBIT_LIMIT}q → MPS starts at norb≥{(SV_QUBIT_LIMIT+3)//2}")
 
-        print(f"  {d:6.3f}  Qiskit...", end="", flush=True)
-        qk = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=cfg.n2_qiskit_timeout)
-        print(f"  Maestro...", end="", flush=True)
-        m  = _run_maestro(hf, norb, nelec, "upccd", "gpu" if gpu else "cpu",
-                          maxiter=cfg.n2_maxiter, mps_bond_dim=cfg.mps_bond_dim)
+    mol = gto.M(atom=f"N 0 0 0; N 0 0 {d_eq}", basis="cc-pvdz", spin=0, verbose=0)
+    hf  = _run_hf(mol)
+    print(f"  HF energy: {hf.e_tot:+.6f} Ha")
 
-        e_qk = qk.get("energy") if _ok(qk) else None
-        e_m  = m.get("energy")  if _ok(m)  else None
+    sweep = _run_scaling_sweep(
+        hf, norb_sweep, gpu=gpu,
+        fci_timeout=cfg.n2_fci_timeout,
+        qiskit_timeout=cfg.n2_qiskit_timeout,
+        maxiter=cfg.n2_maxiter,
+        mps_bond_dim=cfg.mps_bond_dim,
+    )
 
-        print(f"\r  {d:6.3f}  {_fmt(hf.e_tot)}  {_fmt(e_ccsdt)}  {_fmt(e_fci)}  "
-              f"{_fmt(e_qk):>12}  {_fmt(e_m):>12}  "
-              f"{_err(e_qk, ref) or 0:>8.2f}  {_err(e_m, ref) or 0:>8.2f}"
-              f"  [err vs {ref_lbl}]")
-
-        records.append({
-            "bond_length":     d,
-            "e_hf":            hf.e_tot,
-            "e_ccsdt":         e_ccsdt,  "t_ccsdt": t_ccsdt,
-            "e_fci":           e_fci,    "t_fci":   t_fci,
-            "qiskit":          qk,
-            "maestro":         m,
-            "err_ccsdt_mha":   _err(e_ccsdt, e_fci),
-            "err_qiskit_mha":  _err(e_qk,    e_fci),
-            "err_maestro_mha": _err(e_m,     e_fci),
-        })
-
-    return {"name": "n2_diss", "norb": norb, "nelec": list(nelec),
-            "n_qubits": n_qubits, "basis": "cc-pvdz",
-            "bond_distances": distances, "records": records}
+    return {
+        "name":               "n2_scaling",
+        "mol_available":      True,
+        "basis":              "cc-pvdz",
+        "bond_length":        d_eq,
+        "main_norb":          main_norb,
+        "main_nelec":         list(main_nelec),
+        "norb_sweep":         norb_sweep,
+        "sweep_fci_timeout":  cfg.n2_fci_timeout,
+        "sweep_qk_timeout":   cfg.n2_qiskit_timeout,
+        "sweep":              sweep,
+    }
 
 
 # ── Case 2: Cr₂ dimer ─────────────────────────────────────────────────────────
@@ -475,7 +468,7 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
         m_str = f"{m['time']:.1f}s" if m_ok else m.get("status", "?")
 
         sim = m.get("simulation", "?") if m_ok else "—"
-        print(f"  {norb:4d}  {n_qubits:6d}q  {fci_str:>10}  {qk_str:>12}  {m_str:>13}  Maestro={sim}")
+        print(f"  {norb:4d}  {n_qubits:6d}q  {fci_str:>10} {qk_str:>12}  {m_str:>13}  Maestro={sim}")
 
         ref = e_fci
         records.append({
@@ -683,75 +676,8 @@ def _add_pct_axis(ax, e_ref_ha):
 # ── Case 1 plot ───────────────────────────────────────────────────────────────
 
 def plot_case1(data: dict, out_dir: Path):
-    records = data["records"]
-    d_arr   = [r["bond_length"] for r in records]
-    norb, nelec, basis = data["norb"], data["nelec"], data["basis"]
-
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 5))
-    fig.suptitle(
-        f"N₂ Dissociation  CAS({sum(nelec)}e,{norb}o) = {data['n_qubits']}q  {basis}",
-        fontweight="bold")
-
-    # PES
-    for label, ys in [
-        ("RHF",           [r["e_hf"]    for r in records]),
-        ("CCSD(T)",       [r["e_ccsdt"] for r in records]),
-        ("FCI",           [r.get("e_fci") for r in records]),
-        ("Qiskit PUCCD",  [r["qiskit"].get("energy")  if _ok(r["qiskit"])  else None for r in records]),
-        ("Maestro UpCCD", [r["maestro"].get("energy") if _ok(r["maestro"]) else None for r in records]),
-    ]:
-        xs, ys = _filter(d_arr, ys)
-        if xs:
-            st = _st(label)
-            ax1.plot(list(xs), list(ys), marker=st["marker"], ls=st["ls"],
-                     color=st["color"], label=label, lw=2, ms=6)
-    ax1.set(xlabel="Bond length (Å)", ylabel="Energy (Ha)", title="Potential Energy Surface")
-    ax1.legend(fontsize=9)
-
-    # Error vs FCI / CCSD(T)
-    has_fci = any(r.get("e_fci") is not None for r in records)
-    ref_lbl = "FCI" if has_fci else "CCSD(T)"
-    for label, key in [("CCSD(T)", "err_ccsdt_mha"),
-                        ("Qiskit PUCCD", "err_qiskit_mha"),
-                        ("Maestro UpCCD", "err_maestro_mha")]:
-        ys = [max(r.get(key) or 0, 1e-6) if r.get(key) is not None else None for r in records]
-        xs, ys = _filter(d_arr, ys)
-        if xs:
-            st = _st(label)
-            ax2.plot(list(xs), list(ys), marker=st["marker"], ls=st["ls"],
-                     color=st["color"], label=label, lw=2, ms=6)
-    ax2.axhline(CHEM_ACC_MHA, color="gray", ls=":", lw=1.5, label="Chem. accuracy")
-    ax2.set(xlabel="Bond length (Å)", ylabel=f"Error vs {ref_lbl} (mHa)",
-            title=f"Accuracy vs {ref_lbl}", yscale="log")
-    ax2.legend(fontsize=9)
-    # Right axis: relative error in % (uses mean reference energy as fixed scale)
-    e_refs = [r.get("e_fci") if r.get("e_fci") is not None else r.get("e_ccsdt")
-              for r in records]
-    e_refs = [e for e in e_refs if e is not None]
-    _add_pct_axis(ax2, sum(e_refs) / len(e_refs) if e_refs else None)
-
-    # Timing — annotate each point with elapsed seconds
-    for label, ys in [
-        ("CCSD(T)",       [r.get("t_ccsdt") for r in records]),
-        ("FCI",           [r.get("t_fci")   for r in records]),
-        ("Qiskit PUCCD",  [r["qiskit"].get("time")  if _ok(r["qiskit"])  else None for r in records]),
-        ("Maestro UpCCD", [r["maestro"].get("time") if _ok(r["maestro"]) else None for r in records]),
-    ]:
-        xs, ys = _filter(d_arr, ys)
-        if xs:
-            xs_l, ys_l = list(xs), list(ys)
-            st = _st(label)
-            ax3.plot(xs_l, ys_l, marker=st["marker"], ls=st["ls"],
-                     color=st["color"], label=label, lw=2, ms=6)
-            _annotate_times(ax3, xs_l, ys_l, st["color"])
-    ax3.set(xlabel="Bond length (Å)", ylabel="Wall-clock time (s)",
-            title="Computation Time", yscale="log")
-    ax3.legend(fontsize=9)
-
-    fig.tight_layout()
-    path = out_dir / "case1_n2_diss.png"
-    fig.savefig(path, bbox_inches="tight"); plt.close(fig)
-    print(f"  Saved: {path}")
+    data = dict(data, name="n2_scaling")   # ensure correct label in plot_scaling
+    plot_scaling(data, out_dir, "case1_n2_scaling.png")
 
 
 # ── Case 2 plot ───────────────────────────────────────────────────────────────
@@ -822,7 +748,8 @@ def plot_scaling(data: dict, out_dir: Path, filename: str):
     (▼), Qiskit also eventually timing out, while Maestro MPS remains tractable.
     """
     sweep       = data["sweep"]
-    mol_lbl     = {"fe2s2": "Fe₂S₂ Cluster", "feporphine": "Fe-Porphine"}.get(data["name"], data["name"])
+    mol_lbl     = {"fe2s2": "Fe₂S₂ Cluster", "feporphine": "Fe-Porphine",
+                   "n2_scaling": "N₂ Molecule"}.get(data["name"], data["name"])
     sweep_source = "real molecule" if data["mol_available"] else "H-chain model"
     main        = data.get("main")
     main_norb   = data["main_norb"]
@@ -959,7 +886,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 cases
-  --case1   N₂ dissociation  CAS(10e,8o) cc-pvdz       PES, 3 bond lengths
+  --case1   N₂ scaling sweep  cc-pvdz  d=1.098 Å       norb ∈ [2..14], FCI→MPS
   --case2   Cr₂ dimer        CAS(12e,12o) cc-pvdz      single geometry (1.68 Å)
   --case3   Fe₂S₂ cluster    CAS(14e,14o) def2-svp     main + norb scaling sweep
   --case4   Fe-Porphine      CAS(22e,22o) cc-pvdz      main + norb scaling sweep
