@@ -469,6 +469,8 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
 
         sim = m.get("simulation", "?") if m_ok else "—"
         print(f"  {norb:4d}  {n_qubits:6d}q  {fci_str:>10} {qk_str:>12}  {m_str:>13}  Maestro={sim}")
+        if not m_ok and m.get("error"):
+            print(f"    Maestro error: {m['error']}")
 
         ref = e_fci
         records.append({
