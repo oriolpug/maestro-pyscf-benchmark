@@ -30,7 +30,7 @@ the total energy — this gives the equilibrium bond length.
 PySCF's `geomopt` module handles the nuclear gradient loop (using finite
 differences or analytical gradients). At each nuclear geometry, it calls
 CASCI with our MaestroSolver to get the electronic energy. The result is
-the GPU-accelerated equilibrium geometry.
+the equilibrium geometry.
 
 What this example shows
 -----------------------

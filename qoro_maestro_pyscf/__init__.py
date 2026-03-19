@@ -15,10 +15,10 @@
 """
 qoro-maestro-pyscf
 ==================
-PySCF integration plugin for the Maestro GPU quantum simulator (Qoro Quantum).
+PySCF integration plugin for the Maestro quantum simulator (Qoro Quantum).
 
-Enables GPU-accelerated VQE calculations within PySCF's CASCI/CASSCF
-framework using Maestro's native backends.
+Run VQE calculations within PySCF's CASCI/CASSCF framework — works on
+CPU out of the box, with optional GPU acceleration for speed.
 
 Primary API
 -----------
@@ -69,4 +69,4 @@ __all__ = [
     "taper_hamiltonian",
     "TaperingResult",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

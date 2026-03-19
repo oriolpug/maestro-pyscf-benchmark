@@ -35,14 +35,14 @@ classical mean-field methods.
 What this example shows
 -----------------------
 - PySCF computes molecular integrals at each geometry
-- MaestroSolver runs a VQE for each bond length on the GPU
+- MaestroSolver runs a VQE for each bond length
 - We compare HF, VQE (Maestro), and exact FCI energies
 - At large bond lengths, VQE tracks FCI while HF diverges
 
 Usage
 -----
     python 01_h2_dissociation.py          # CPU (default)
-    python 01_h2_dissociation.py --gpu    # GPU accelerated
+    python 01_h2_dissociation.py --gpu    # GPU (faster, requires license)
 """
 
 import argparse
