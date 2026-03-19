@@ -121,7 +121,7 @@ FULL = BenchmarkConfig(
     sweep_qiskit_timeout  = 0,
     sweep_maestro_timeout = 0,      # no wall-clock limit by default
 
-    mps_bond_dim        = 32,
+    mps_bond_dim        = 128,
 )
 
 SMALL = BenchmarkConfig(
