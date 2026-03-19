@@ -34,7 +34,8 @@ dependencies = [
     "scipy>=1.7",
     "numpy>=1.21",
     "qoro-maestro",
-    "qiskit-nature (>=0.7.2,<0.8.0)",
+    "qiskit-aer>=0.17.2",
+    "qiskit-nature>=0.7.2,<0.8.0",
 ]
 
 [project.optional-dependencies]
