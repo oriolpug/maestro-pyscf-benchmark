@@ -91,9 +91,10 @@ class BenchmarkConfig:
     # Cases 3 & 4: norb scaling sweep
     norb_sweep_3:       list        # Fe₂S₂
     norb_sweep_4:       list        # Fe-Porphine
-    sweep_maxiter:      int
-    sweep_fci_timeout:  int
+    sweep_maxiter:        int
+    sweep_fci_timeout:    int
     sweep_qiskit_timeout: int
+    sweep_maestro_timeout: int
 
     # Shared MPS settings
     mps_bond_dim:       int
@@ -115,9 +116,10 @@ FULL = BenchmarkConfig(
 
     norb_sweep_3        = [4, 6, 8, 10, 12, 14],
     norb_sweep_4        = [4, 6, 8, 10, 12, 14, 18, 22],
-    sweep_maxiter       = 200,
-    sweep_fci_timeout   = 30,
-    sweep_qiskit_timeout = 180,
+    sweep_maxiter         = 200,
+    sweep_fci_timeout     = 30,
+    sweep_qiskit_timeout  = 180,
+    sweep_maestro_timeout = 0,      # no wall-clock limit by default
 
     mps_bond_dim        = 32,
 )
@@ -139,9 +141,10 @@ SMALL = BenchmarkConfig(
 
     norb_sweep_3        = [4, 6, 8],       # 3 points instead of 6
     norb_sweep_4        = [4, 6, 8],       # 3 points instead of 8
-    sweep_maxiter       = 50,
-    sweep_fci_timeout   = 10,
-    sweep_qiskit_timeout = 60,
+    sweep_maxiter         = 50,
+    sweep_fci_timeout     = 10,
+    sweep_qiskit_timeout  = 60,
+    sweep_maestro_timeout = 300,
 
     mps_bond_dim        = 32,
 )
@@ -355,6 +358,7 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
         hf, norb_sweep, gpu=gpu,
         fci_timeout=cfg.n2_fci_timeout,
         qiskit_timeout=cfg.n2_qiskit_timeout,
+        maestro_timeout=cfg.sweep_maestro_timeout,
         maxiter=cfg.n2_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
     )
@@ -433,17 +437,23 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
 # ── Scaling sweep (shared by Cases 3 & 4) ─────────────────────────────────────
 
 def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
-                       fci_timeout=30, qiskit_timeout=180,
+                       fci_timeout=30, qiskit_timeout=180, maestro_timeout=0,
                        maxiter=200, mps_bond_dim=128) -> list[dict]:
     """For each norb, run FCI / Qiskit PUCCD / Maestro UpCCD.
 
     hf_or_builder: either a pyscf SCF object (shared HF, vary active space)
                    or a callable norb → gto.Mole (build a fresh molecule per norb).
     nelec = (norb//2, norb//2)  [half-filling — maximises entanglement, worst case].
+
+    Once Qiskit or Maestro times out for a given norb, all larger norb values are
+    skipped for that solver (timeout is monotone in system size).
     """
     records = []
     print(f"  {'norb':>4}  {'qubits':>6}  "
           f"{'FCI time':>10}  {'Qiskit time':>12}  {'Maestro time':>13}  notes")
+
+    qk_skip = False   # set True once Qiskit times out
+    m_skip  = False   # set True once Maestro times out
 
     for norb in norb_values:
         nelec    = (norb // 2, norb // 2)
@@ -458,20 +468,34 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
         e_fci, t_fci = _run_fci(hf, norb, nelec, timeout_s=fci_timeout)
         fci_str = f"{t_fci:.1f}s" if t_fci is not None else f">{fci_timeout}s (TO)"
 
-        qk    = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=qiskit_timeout)
+        if qk_skip:
+            qk = {"status": "skipped", "error": "skipped (prev timeout)"}
+            qk_str = "skipped"
+        else:
+            qk = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=qiskit_timeout)
+            if qk.get("status") == "timeout":
+                qk_skip = True
+            qk_str = (f"{qk['time']:.1f}s" if _ok(qk)
+                      else f">{qiskit_timeout}s ({qk.get('status','?')})")
         qk_ok = _ok(qk)
-        qk_str = f"{qk['time']:.1f}s" if qk_ok else f">{qiskit_timeout}s ({qk.get('status','?')})"
 
-        m    = _run_maestro(hf, norb, nelec, "upccd", "gpu" if gpu else "cpu",
-                            maxiter=maxiter, mps_bond_dim=mps_bond_dim)
+        if m_skip:
+            m = {"status": "skipped", "error": "skipped (prev timeout)"}
+            m_str = "skipped"
+        else:
+            m = _run_maestro(hf, norb, nelec, "upccd", "gpu" if gpu else "cpu",
+                             maxiter=maxiter, mps_bond_dim=mps_bond_dim,
+                             timeout_s=maestro_timeout)
+            if m.get("status") == "timeout":
+                m_skip = True
+            m_str = f"{m['time']:.1f}s" if _ok(m) else m.get("status", "?")
         m_ok = _ok(m)
-        m_str = f"{m['time']:.1f}s" if m_ok else m.get("status", "?")
 
         sim = m.get("simulation", "?") if m_ok else "—"
         print(f"  {norb:4d}  {n_qubits:6d}q  {fci_str:>10} {qk_str:>12}  {m_str:>13}  Maestro={sim}")
-        if not qk_ok and qk.get("error"):
+        if not qk_ok and qk.get("error") and qk.get("status") != "skipped":
             print(f"    Qiskit error: {qk['error']}")
-        if not m_ok and m.get("error"):
+        if not m_ok and m.get("error") and m.get("status") != "skipped":
             print(f"    Maestro error: {m['error']}")
 
         ref = e_fci
@@ -563,6 +587,7 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
         hf_or_builder, norb_sweep, gpu,
         fci_timeout=cfg.sweep_fci_timeout,
         qiskit_timeout=cfg.sweep_qiskit_timeout,
+        maestro_timeout=cfg.sweep_maestro_timeout,
         maxiter=cfg.sweep_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
     )
@@ -939,10 +964,11 @@ examples
     if args.no_timeout:
         cfg = dataclasses.replace(
             cfg,
-            n2_qiskit_timeout    = 0,
-            cr2_qiskit_timeout   = 0,
-            main_qiskit_timeout  = 0,
-            sweep_qiskit_timeout = 0,
+            n2_qiskit_timeout     = 0,
+            cr2_qiskit_timeout    = 0,
+            main_qiskit_timeout   = 0,
+            sweep_qiskit_timeout  = 0,
+            sweep_maestro_timeout = 0,
         )
 
     selected = [k for k, f in [("case1", args.case1), ("case2", args.case2),
