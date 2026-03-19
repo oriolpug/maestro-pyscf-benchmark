@@ -76,25 +76,24 @@ class BenchmarkConfig:
     n2_norb_sweep:      list        # active-space sizes to sweep
     n2_fci_timeout:     int         # seconds per FCI call
     n2_maxiter:         int         # Maestro VQE maxiter
-    n2_qiskit_timeout:  int         # seconds per Qiskit VQE call
 
     # Case 2: Cr₂
     cr2_maxiter:        int
     cr2_fci_timeout:    int
-    cr2_qiskit_timeout: int
 
     # Cases 3 & 4: main single-point benchmark
     main_maxiter:       int
     main_fci_timeout:   int
-    main_qiskit_timeout: int
 
     # Cases 3 & 4: norb scaling sweep
     norb_sweep_3:       list        # Fe₂S₂
     norb_sweep_4:       list        # Fe-Porphine
-    sweep_maxiter:        int
-    sweep_fci_timeout:    int
-    sweep_qiskit_timeout: int
-    sweep_maestro_timeout: int
+    sweep_maxiter:      int
+    sweep_fci_timeout:  int
+
+    # Shared VQE timeout — applies to both Qiskit and Maestro across all cases
+    # 0 means no wall-clock limit.  Override at runtime with --timeout / --no-timeout.
+    vqe_timeout:        int
 
     # Shared MPS settings
     mps_bond_dim:       int
@@ -104,22 +103,19 @@ FULL = BenchmarkConfig(
     n2_norb_sweep       = [4, 10, 14, 18],
     n2_fci_timeout      = 3600,
     n2_maxiter          = 300,
-    n2_qiskit_timeout   = 300,
 
     cr2_maxiter         = 300,
     cr2_fci_timeout     = 30,
-    cr2_qiskit_timeout  = 300,
 
     main_maxiter        = 300,
     main_fci_timeout    = 30,
-    main_qiskit_timeout = 300,
 
     norb_sweep_3        = [4, 6, 8, 10, 12, 14],
     norb_sweep_4        = [4, 6, 8, 10, 12, 14, 18, 22],
-    sweep_maxiter         = 200,
-    sweep_fci_timeout     = 30,
-    sweep_qiskit_timeout  = 0,
-    sweep_maestro_timeout = 0,      # no wall-clock limit by default
+    sweep_maxiter       = 200,
+    sweep_fci_timeout   = 30,
+
+    vqe_timeout         = 300,
 
     mps_bond_dim        = 128,
 )
@@ -129,22 +125,19 @@ SMALL = BenchmarkConfig(
     n2_norb_sweep       = [2, 4, 6, 8],   # 4 points instead of 7
     n2_fci_timeout      = 20,
     n2_maxiter          = 100,
-    n2_qiskit_timeout   = 60,
 
     cr2_maxiter         = 100,
     cr2_fci_timeout     = 10,
-    cr2_qiskit_timeout  = 60,
 
     main_maxiter        = 100,
     main_fci_timeout    = 10,
-    main_qiskit_timeout = 60,
 
     norb_sweep_3        = [4, 6, 8],       # 3 points instead of 6
     norb_sweep_4        = [4, 6, 8],       # 3 points instead of 8
-    sweep_maxiter         = 50,
-    sweep_fci_timeout     = 10,
-    sweep_qiskit_timeout  = 60,
-    sweep_maestro_timeout = 300,
+    sweep_maxiter       = 50,
+    sweep_fci_timeout   = 10,
+
+    vqe_timeout         = 60,
 
     mps_bond_dim        = 32,
 )
@@ -363,8 +356,8 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
     sweep = _run_scaling_sweep(
         hf, norb_sweep, gpu=gpu,
         fci_timeout=cfg.n2_fci_timeout,
-        qiskit_timeout=cfg.n2_qiskit_timeout,
-        maestro_timeout=cfg.sweep_maestro_timeout,
+        qiskit_timeout=cfg.vqe_timeout,
+        maestro_timeout=cfg.vqe_timeout,
         maxiter=cfg.n2_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
         nelec_fn=nelec_fn,
@@ -379,7 +372,7 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
         "main_nelec":         list(main_nelec),
         "norb_sweep":         norb_sweep,
         "sweep_fci_timeout":  cfg.n2_fci_timeout,
-        "sweep_qk_timeout":   cfg.n2_qiskit_timeout,
+        "sweep_qk_timeout":   cfg.vqe_timeout,
         "sweep":              sweep,
     }
 
@@ -410,7 +403,7 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
         print(f"  FCI     : timeout  ({n_qubits}q → {2**n_qubits:,} dim)")
 
     print(f"  Qiskit PUCCD ...", end="", flush=True)
-    qk = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=cfg.cr2_qiskit_timeout)
+    qk = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=cfg.vqe_timeout)
     e_qk = qk.get("energy") if _ok(qk) else None
     if _ok(qk):
         print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
@@ -556,7 +549,7 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
 
             print(f"  Qiskit PUCCD ...", end="", flush=True)
             qk = _run_qiskit_vqe(hf, main_norb, main_nelec, "PUCCD",
-                                  timeout_s=cfg.main_qiskit_timeout, mps_bond_dim=cfg.mps_bond_dim)
+                                  timeout_s=cfg.vqe_timeout, mps_bond_dim=cfg.mps_bond_dim)
             e_qk = qk.get("energy") if _ok(qk) else None
             if _ok(qk):
                 print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
@@ -602,8 +595,8 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
     sweep = _run_scaling_sweep(
         hf_or_builder, norb_sweep, gpu,
         fci_timeout=cfg.sweep_fci_timeout,
-        qiskit_timeout=cfg.sweep_qiskit_timeout,
-        maestro_timeout=cfg.sweep_maestro_timeout,
+        qiskit_timeout=cfg.vqe_timeout,
+        maestro_timeout=cfg.vqe_timeout,
         maxiter=cfg.sweep_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
     )
@@ -619,7 +612,7 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
         "sweep":             sweep,
         # Store timeout caps so the plot can annotate ▼ at the right level
         "sweep_fci_timeout": cfg.sweep_fci_timeout,
-        "sweep_qk_timeout":  cfg.sweep_qiskit_timeout,
+        "sweep_qk_timeout":  cfg.vqe_timeout,
     }
 
 
@@ -958,8 +951,12 @@ examples
     parser.add_argument("--plot",       action="store_true", help="Plot from cache (skip run)")
     parser.add_argument("--small",      action="store_true",
                         help="Fast prototyping: fewer geometries, smaller sweeps, χ=32")
-    parser.add_argument("--no-timeout", action="store_true",
-                        help="Remove Qiskit VQE time limits (let it run to convergence)")
+    to_grp = parser.add_mutually_exclusive_group()
+    to_grp.add_argument("--timeout",    type=int, default=None, metavar="SEC",
+                        help="VQE wall-clock limit in seconds for both Qiskit and Maestro "
+                             "(overrides config default; 0 = no limit)")
+    to_grp.add_argument("--no-timeout", action="store_true",
+                        help="Remove all VQE time limits (equivalent to --timeout 0)")
     parser.add_argument("--gpu",        action="store_true", help="Maestro GPU backend")
     parser.add_argument("--case1",      action="store_true", help="N₂ dissociation")
     parser.add_argument("--case2",      action="store_true", help="Cr₂ dimer")
@@ -977,15 +974,10 @@ examples
 
     cfg    = SMALL if args.small else FULL
     mode   = "small" if args.small else "full"
-    if args.no_timeout:
-        cfg = dataclasses.replace(
-            cfg,
-            n2_qiskit_timeout     = 0,
-            cr2_qiskit_timeout    = 0,
-            main_qiskit_timeout   = 0,
-            sweep_qiskit_timeout  = 0,
-            sweep_maestro_timeout = 0,
-        )
+    if args.no_timeout or args.timeout == 0:
+        cfg = dataclasses.replace(cfg, vqe_timeout=0)
+    elif args.timeout is not None:
+        cfg = dataclasses.replace(cfg, vqe_timeout=args.timeout)
 
     selected = [k for k, f in [("case1", args.case1), ("case2", args.case2),
                                 ("case3", args.case3), ("case4", args.case4)] if f]
@@ -999,8 +991,10 @@ examples
         print(f"  Mode    : {mode}  (--small for fast prototyping, full for cluster)")
         print(f"  GPU     : {'enabled' if args.gpu else 'disabled'}")
         print(f"  Cases   : {', '.join(to_run)}")
+        timeout_str = "none" if cfg.vqe_timeout == 0 else f"{cfg.vqe_timeout}s"
+        print(f"  Timeout : {timeout_str} per VQE call (Qiskit & Maestro)")
         if args.small:
-            print(f"  Config  : distances={cfg.n2_distances}  "
+            print(f"  Config  : n2_norb_sweep={cfg.n2_norb_sweep}  "
                   f"norb_sweep_3={cfg.norb_sweep_3}  χ={cfg.mps_bond_dim}  "
                   f"maxiter≤{cfg.n2_maxiter}")
         print(f"  Date    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
