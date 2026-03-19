@@ -101,7 +101,7 @@ class BenchmarkConfig:
 
 
 FULL = BenchmarkConfig(
-    n2_norb_sweep       = [2, 6, 10, 14, 18, 22],
+    n2_norb_sweep       = [18, 22],
     n2_fci_timeout      = 3600,
     n2_maxiter          = 300,
     n2_qiskit_timeout   = 300,
@@ -118,7 +118,7 @@ FULL = BenchmarkConfig(
     norb_sweep_4        = [4, 6, 8, 10, 12, 14, 18, 22],
     sweep_maxiter         = 200,
     sweep_fci_timeout     = 30,
-    sweep_qiskit_timeout  = 180,
+    sweep_qiskit_timeout  = 0,
     sweep_maestro_timeout = 0,      # no wall-clock limit by default
 
     mps_bond_dim        = 32,
@@ -339,12 +339,12 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
     """N₂ cc-pvdz — active-space scaling sweep at equilibrium geometry (d = 1.098 Å).
 
     Sweeps norb from small (FCI trivial) through large (FCI intractable, needs MPS/quantum).
-    nelec = (norb//2, norb//2) throughout; ParityMapper maps 2*norb → 2*norb-2 qubits.
+    For real molecules, nelec is capped at the actual electron count; ParityMapper maps
+    2*norb → 2*norb-2 qubits.
     """
     d_eq  = 1.098
     norb_sweep = cfg.n2_norb_sweep
     main_norb  = norb_sweep[-1]
-    main_nelec = (main_norb // 2, main_norb // 2)
 
     print(f"\n[Case 1] N₂ Scaling Sweep  d={d_eq} Å  cc-pvdz")
     print(f"  norb sweep: {norb_sweep}  (qubits: {[2*n for n in norb_sweep]})")
@@ -354,6 +354,12 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
     hf  = _run_hf(mol)
     print(f"  HF energy: {hf.e_tot:+.6f} Ha")
 
+    # Cap active-space electrons at the molecule's actual count (N₂ has 14e = 7α+7β)
+    max_alpha = mol.nelectron // 2
+    max_beta  = mol.nelectron - max_alpha
+    nelec_fn  = lambda n: (min(n // 2, max_alpha), min(n // 2, max_beta))
+    main_nelec = nelec_fn(main_norb)
+
     sweep = _run_scaling_sweep(
         hf, norb_sweep, gpu=gpu,
         fci_timeout=cfg.n2_fci_timeout,
@@ -361,6 +367,7 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
         maestro_timeout=cfg.sweep_maestro_timeout,
         maxiter=cfg.n2_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
+        nelec_fn=nelec_fn,
     )
 
     return {
@@ -408,7 +415,7 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
     if _ok(qk):
         print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
     else:
-        print(f"  {qk.get('status', 'FAILED')}: {qk.get('error', '')[:80]}")
+        print(f"  {qk.get('status', 'FAILED')}: {qk.get('error', '')}")
 
     print(f"  Maestro UpCCD MPS ...", end="", flush=True)
     m  = _run_maestro(hf, norb, nelec, "upccd", "gpu" if gpu else "cpu",
@@ -438,16 +445,21 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
 
 def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
                        fci_timeout=30, qiskit_timeout=180, maestro_timeout=0,
-                       maxiter=200, mps_bond_dim=128) -> list[dict]:
+                       maxiter=200, mps_bond_dim=128, nelec_fn=None) -> list[dict]:
     """For each norb, run FCI / Qiskit PUCCD / Maestro UpCCD.
 
     hf_or_builder: either a pyscf SCF object (shared HF, vary active space)
                    or a callable norb → gto.Mole (build a fresh molecule per norb).
-    nelec = (norb//2, norb//2)  [half-filling — maximises entanglement, worst case].
+    nelec_fn: optional callable norb → (nalpha, nbeta).  Defaults to half-filling
+              (norb//2, norb//2), which is correct for H-chain models.  Pass a
+              clamped function for real molecules where nelec is bounded by the
+              total electron count (e.g. N₂ has at most 7α + 7β).
 
     Once Qiskit or Maestro times out for a given norb, all larger norb values are
     skipped for that solver (timeout is monotone in system size).
     """
+    if nelec_fn is None:
+        nelec_fn = lambda n: (n // 2, n // 2)
     records = []
     print(f"  {'norb':>4}  {'qubits':>6}  "
           f"{'FCI time':>10}  {'Qiskit time':>12}  {'Maestro time':>13}  notes")
@@ -456,7 +468,7 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
     m_skip  = False   # set True once Maestro times out
 
     for norb in norb_values:
-        nelec    = (norb // 2, norb // 2)
+        nelec    = nelec_fn(norb)
         n_qubits = 2 * norb
 
         if isinstance(hf_or_builder, scf.hf.SCF):
@@ -493,10 +505,14 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
 
         sim = m.get("simulation", "?") if m_ok else "—"
         print(f"  {norb:4d}  {n_qubits:6d}q  {fci_str:>10} {qk_str:>12}  {m_str:>13}  Maestro={sim}")
-        if not qk_ok and qk.get("error") and qk.get("status") != "skipped":
-            print(f"    Qiskit error: {qk['error']}")
-        if not m_ok and m.get("error") and m.get("status") != "skipped":
-            print(f"    Maestro error: {m['error']}")
+        if not qk_ok and qk.get("status") != "skipped":
+            print(f"    Qiskit error: {qk.get('error') or '(no message)'}")
+            if qk.get("traceback"):
+                print(qk["traceback"])
+        if not m_ok and m.get("status") != "skipped":
+            print(f"    Maestro error: {m.get('error') or '(no message)'}")
+            if m.get("traceback"):
+                print(m["traceback"])
 
         ref = e_fci
         records.append({
@@ -545,7 +561,7 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
             if _ok(qk):
                 print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
             else:
-                print(f"  {qk.get('status', '?')}: {qk.get('error', '')[:80]}")
+                print(f"  {qk.get('status', '?')}: {qk.get('error', '')}")
 
             print(f"  Maestro UpCCD ...", end="", flush=True)
             m  = _run_maestro(hf, main_norb, main_nelec, "upccd",
