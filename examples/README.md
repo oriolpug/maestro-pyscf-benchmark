@@ -1,6 +1,6 @@
 # Examples
 
-Hands-on examples demonstrating `qoro-maestro-pyscf` for quantum chemistry on Maestro's GPU-accelerated simulator.
+Hands-on examples demonstrating `qoro-maestro-pyscf` for quantum chemistry. All examples run on **CPU by default** — no GPU or license needed to get started.
 
 ## Quick Start
 
@@ -8,10 +8,12 @@ Hands-on examples demonstrating `qoro-maestro-pyscf` for quantum chemistry on Ma
 pip install qoro-maestro-pyscf
 cd examples/
 
-# Run any example
+# Run any example (CPU by default)
 python 01_h2_dissociation.py
+python 06_nevpt2.py
+
+# Upgrade to GPU for speed
 python 06_nevpt2.py --gpu
-python full_workflow/full_workflow.py --gpu
 ```
 
 ## Examples
@@ -80,18 +82,23 @@ cas.fcisolver = MaestroSolver(
 
 > **Note:** Examples 1–3, 7, and 8 use only 4 qubits — statevector is faster for these. MPS overhead isn't worth it below ~6 qubits.
 
-## GPU vs CPU
+## CPU vs GPU
 
-All examples support `--gpu` and `--cpu` flags:
+All examples run on **CPU by default** — just run them:
+
+```bash
+python 06_nevpt2.py          # CPU (default, no license needed)
+```
+
+Want GPU acceleration? Add `--gpu`:
 
 ```bash
 python 06_nevpt2.py --gpu    # NVIDIA GPU (requires license)
-python 06_nevpt2.py --cpu    # CPU fallback (no GPU needed)
 ```
 
-## License Key
+## GPU License Key
 
-For GPU examples, set your Maestro license key:
+For GPU mode, get your key instantly at [maestro.qoroquantum.net](https://maestro.qoroquantum.net), then:
 
 ```bash
 export MAESTRO_LICENSE_KEY="XXXX-XXXX-XXXX-XXXX"

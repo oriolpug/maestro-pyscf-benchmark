@@ -22,7 +22,7 @@ Advanced example combining all three features added for the Izmaylov lab:
 1. **Dynamic ansatz injection** — iterative QCC macro-cycles where new
    Pauli-word entanglers are screened and added between optimisation rounds.
 2. **Custom Pauli evaluation** — ``evaluate_custom_paulis()`` to directly
-   evaluate grouped Pauli terms on the GPU without OpenFermion.
+   evaluate grouped Pauli terms on Maestro without OpenFermion.
 3. **Raw state extraction** — ``get_final_statevector()`` to compute exact
    state fidelity against exact diagonalisation.
 

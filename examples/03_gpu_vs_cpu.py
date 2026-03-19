@@ -36,8 +36,9 @@ The GPU speedup compounds across all of these.
 
 What Maestro offers
 -------------------
+- **CPU by default** — works out of the box, no license needed
+- **GPU upgrade** — switch to GPU for dramatic speedups on larger systems
 - **Same API** — switching from CPU to GPU is a single argument change
-- **Automatic fallback** — if no GPU is available, falls back gracefully to CPU
 - **No code changes** — your circuit, ansatz, and optimiser are identical
 
 What this example shows

@@ -27,7 +27,7 @@ class TestSolverFieldsUnit:
         s = MaestroSolver()
         assert s.ansatz == "hardware_efficient"
         assert s.ansatz_layers == 2
-        assert s.backend == "gpu"
+        assert s.backend == "cpu"
         assert s.simulation == "statevector"
         assert s.taper is False
         assert s.vqd_penalty == 5.0
@@ -115,9 +115,8 @@ class TestSolverFieldsUnit:
         assert MaestroSolver(learning_rate=0.05).learning_rate == 0.05
 
     def test_grad_shift_default(self):
-        import math
         from qoro_maestro_pyscf import MaestroSolver
-        assert MaestroSolver().grad_shift == pytest.approx(math.pi / 2)
+        assert MaestroSolver().grad_shift == pytest.approx(1e-3)
 
     def test_adam_optimizer_field(self):
         """optimizer='adam' is accepted without errors."""

@@ -2,9 +2,9 @@
 
 ## What Is This?
 
-`qoro-maestro-pyscf` is a PySCF integration plugin for the [Maestro](https://qoroquantum.github.io/maestro/) GPU quantum simulator by [Qoro Quantum](https://qoroquantum.de). It enables GPU-accelerated VQE calculations within PySCF's CASCI/CASSCF framework.
+`qoro-maestro-pyscf` is a PySCF integration plugin for the [Maestro](https://qoroquantum.github.io/maestro/) quantum simulator by [Qoro Quantum](https://qoroquantum.de). It enables VQE calculations within PySCF's CASCI/CASSCF framework — works on CPU out of the box, with optional GPU acceleration for speed.
 
-It lets you run quantum chemistry calculations (VQE) on Maestro's GPU-accelerated backends directly within PySCF's CASCI/CASSCF framework.
+It lets you run quantum chemistry calculations (VQE) on Maestro's CPU or GPU-accelerated backends directly within PySCF's CASCI/CASSCF framework.
 
 ---
 
@@ -125,9 +125,9 @@ cas.fcisolver = MaestroSolver(
 
 | Backend | `simulation=` | Best For | Notes |
 |---------|--------------|----------|-------|
-| GPU Statevector | `"statevector"` | Small-medium systems (≤30 qubits) | Exact, fast on GPU |
-| GPU MPS | `"mps"` | Larger systems with bounded entanglement | Tuneable bond dimension |
-| CPU (fallback) | `"statevector"` | Development, no GPU available | Auto-fallback |
+| CPU Statevector | `"statevector"` | Getting started, development | Default — no license needed |
+| GPU Statevector | `"statevector"` | Small-medium systems (≤30 qubits) | Exact, fast on GPU (requires license) |
+| GPU MPS | `"mps"` | Larger systems with bounded entanglement | Tuneable bond dimension (requires license) |
 
 ---
 
@@ -168,7 +168,7 @@ The `ci` argument is actually `self` — we return it from `kernel()` as the "CI
 | `maxiter` | int | 200 | Maximum VQE iterations (0 = pre-computed mode) |
 | `learning_rate` | float | 0.01 | Step size for Adam optimizer |
 | `grad_shift` | float | π/2 | Parameter-shift rule offset (π/2 = exact for single-qubit gates) |
-| `backend` | str | `"gpu"` | `"gpu"` or `"cpu"` |
+| `backend` | str | `"cpu"` | `"cpu"` or `"gpu"` (GPU requires license) |
 | `simulation` | str | `"statevector"` | `"statevector"` or `"mps"` |
 | `mps_bond_dim` | int | 64 | MPS bond dimension (only for `simulation="mps"`) |
 | `taper` | bool | `False` | Enable Z₂ qubit tapering (saves ~2 qubits) |
