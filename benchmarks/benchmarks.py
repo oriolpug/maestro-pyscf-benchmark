@@ -222,82 +222,148 @@ def _run_maestro(hf, norb, nelec, ansatz, backend, simulation=None,
                 "traceback": traceback.format_exc()}
 
 
-def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="PUCCD", timeout_s=0, mps_bond_dim: int = 64) -> dict:
+def _build_qiskit_upccd_circuit(norb: int, nelec: tuple):
+    """Build a native Qiskit UpCCD circuit using JW qubit ordering.
+
+    Uses the exact same 6-CNOT + 1-Ry decomposition as Maestro's
+    _apply_double_excitation — no Trotterisation, no EvolvedOps.
+
+    JW ordering: qubit 2*i = alpha spin-orbital i, qubit 2*i+1 = beta.
+
+    Returns (qc, n_params) where qc has ParameterVector 'θ'.
+    """
+    from qiskit import QuantumCircuit
+    from qiskit.circuit import ParameterVector
+
+    n_alpha, n_beta = nelec
+    n_qubits = 2 * norb
+    n_occ = min(n_alpha, n_beta)
+    occ_spatial = list(range(n_occ))
+    vir_spatial = list(range(max(n_alpha, n_beta), norb))
+    pairs = [(i, a) for i in occ_spatial for a in vir_spatial]
+
+    n_params = len(pairs)
+    params = ParameterVector("θ", n_params)
+    qc = QuantumCircuit(n_qubits)
+
+    # Hartree-Fock initial state (JW: X on occupied spin-orbitals)
+    for i in range(n_alpha):
+        qc.x(2 * i)
+    for i in range(n_beta):
+        qc.x(2 * i + 1)
+
+    # Paired double excitations: 6 CNOT + 1 Ry per pair
+    for idx, (i_spat, a_spat) in enumerate(pairs):
+        i_alpha = 2 * i_spat
+        i_beta  = 2 * i_spat + 1
+        a_alpha = 2 * a_spat
+        a_beta  = 2 * a_spat + 1
+        p, q, r, s = sorted([i_alpha, i_beta, a_alpha, a_beta])
+        theta = params[idx]
+        qc.cx(p, q)
+        qc.cx(r, s)
+        qc.cx(p, r)
+        qc.ry(p, 2 * theta)
+        qc.cx(p, r)
+        qc.cx(r, s)
+        qc.cx(p, q)
+
+    return qc, n_params
+
+
+def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="UpCCD", timeout_s=0, mps_bond_dim: int = 64,
+                    maxiter: int = 200) -> dict:
     """Qiskit VQE via native Qiskit 2.x API (scipy SLSQP).
 
-    ParityMapper(num_particles) reduces 2*norb qubits by 2.
-    Uses StatevectorEstimator when n_qubits_mapped <= SV_QUBIT_LIMIT,
-    otherwise switches to Aer MPS (qiskit_aer Estimator with
-    method='matrix_product_state').
+    ansatz_type="UpCCD" (default):
+        Native JW-ordered circuit with exact 6-CNOT + Ry paired doubles.
+        Uses JordanWignerMapper (2*norb qubits, no qubit reduction).
+        No transpilation needed — circuit is already in basis gates.
+
+    ansatz_type="PUCCD" / "UCCSD":
+        Trotterised library ansatz via ParityMapper (2*norb-2 qubits).
+        Requires transpile() to decompose EvolvedOps for Aer.
+
     ecore is added back so the returned energy matches PySCF CASCI total energy.
     """
     def _do():
         from scipy.optimize import minimize as _minimize
         from pyscf import ao2mo as _ao2mo
         from qiskit_nature.second_q.hamiltonians import ElectronicEnergy
-        from qiskit_nature.second_q.mappers import ParityMapper
         from qiskit_nature.second_q.problems import (
             ElectronicBasis, ElectronicStructureProblem)
-        from qiskit_nature.second_q.circuit.library import HartreeFock, PUCCD, UCCSD
 
         nalpha, nbeta = nelec if not isinstance(nelec, int) else (nelec // 2, nelec // 2)
-        n_qubits_mapped = 2 * norb - 2  # ParityMapper(num_particles) reduces by 2
 
         cas_obj = mcscf.CASCI(hf, norb, (nalpha, nbeta)); cas_obj.verbose = 0
         h1, ecore = cas_obj.get_h1eff()
         h2 = _ao2mo.restore(1, cas_obj.get_h2eff(), norb)
 
         hamiltonian = ElectronicEnergy.from_raw_integrals(h1, h2)
-        hamiltonian.constants["inactive energy"] = ecore
         problem = ElectronicStructureProblem(hamiltonian)
         problem.basis = ElectronicBasis.MO
         problem.num_spatial_orbitals = norb
         problem.num_particles = (nalpha, nbeta)
 
-        mapper   = ParityMapper(num_particles=(nalpha, nbeta))
-        qubit_op = mapper.map(problem.second_q_ops()[0])
+        if ansatz_type == "UpCCD":
+            from qiskit_nature.second_q.mappers import JordanWignerMapper
+            mapper   = JordanWignerMapper()
+            qubit_op = mapper.map(problem.second_q_ops()[0])
+            n_qubits = 2 * norb
+            ansatz, n_params = _build_qiskit_upccd_circuit(norb, (nalpha, nbeta))
+        else:
+            from qiskit_nature.second_q.mappers import ParityMapper
+            from qiskit_nature.second_q.circuit.library import HartreeFock, PUCCD, UCCSD
+            mapper   = ParityMapper(num_particles=(nalpha, nbeta))
+            qubit_op = mapper.map(problem.second_q_ops()[0])
+            n_qubits = 2 * norb - 2  # ParityMapper reduces by 2
+            hf_state = HartreeFock(norb, (nalpha, nbeta), mapper)
+            ansatz   = (UCCSD if ansatz_type == "UCCSD" else PUCCD)(
+                norb, (nalpha, nbeta), mapper, initial_state=hf_state)
+            n_params = ansatz.num_parameters
 
-        hf_state = HartreeFock(norb, (nalpha, nbeta), mapper)
-        ansatz = (UCCSD if ansatz_type == "UCCSD" else PUCCD)(
-            norb, (nalpha, nbeta), mapper, initial_state=hf_state)
-
-        n_params = ansatz.num_parameters
-
-        if n_qubits_mapped <= SV_QUBIT_LIMIT:
+        if n_qubits <= SV_QUBIT_LIMIT:
             from qiskit.primitives import StatevectorEstimator
             sv_est = StatevectorEstimator()
 
             def _energy(params):
-                bound = ansatz.assign_parameters(params)
-                return float(sv_est.run([(bound, qubit_op)]).result()[0].data.evs)
+                job = sv_est.run([(ansatz, qubit_op, list(params))])
+                return float(job.result()[0].data.evs)
 
             simulation = "statevector"
         else:
             from qiskit_aer.primitives import EstimatorV2 as AerEstimator
             from qiskit_aer import AerSimulator
-            from qiskit import transpile
             aer_sim = AerSimulator(
                 method="matrix_product_state",
                 matrix_product_state_max_bond_dimension=mps_bond_dim,
             )
             aer_est = AerEstimator.from_backend(aer_sim)
-            ansatz_t = transpile(ansatz, backend=aer_sim, optimization_level=0)
+            if ansatz_type == "UpCCD":
+                # Native circuit is already in basis gates — no transpile needed
+                run_circuit = ansatz
+            else:
+                from qiskit import transpile
+                run_circuit = transpile(ansatz, backend=aer_sim, optimization_level=0)
 
             def _energy(params):
-                job = aer_est.run([(ansatz_t, qubit_op, list(params))])
+                job = aer_est.run([(run_circuit, qubit_op, list(params))])
                 return float(job.result()[0].data.evs)
 
             simulation = "mps"
 
+        # Same optimizer and initial point as Maestro for a fair comparison
+        rng = np.random.default_rng(42)
+        x0 = rng.uniform(-0.05, 0.05, size=n_params)
         t0 = time.perf_counter()
-        opt = _minimize(_energy, np.zeros(n_params), method="SLSQP",
-                        options={"maxiter": 500, "ftol": 1e-10})
+        opt = _minimize(_energy, x0, method="COBYLA",
+                        options={"maxiter": maxiter, "rhobeg": 0.3})
         return {"status": "ok", "energy": opt.fun + ecore,
                 "time": time.perf_counter() - t0,
                 "n_params": n_params, "n_iter": opt.nit,
                 "converged": bool(opt.success),
                 "simulation": simulation,
-                "n_qubits": n_qubits_mapped}
+                "n_qubits": n_qubits}
 
     try:
         return _timed(_do, timeout_s) if timeout_s > 0 else _do()
@@ -402,8 +468,9 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
     else:
         print(f"  FCI     : timeout  ({n_qubits}q → {2**n_qubits:,} dim)")
 
-    print(f"  Qiskit PUCCD ...", end="", flush=True)
-    qk = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=cfg.vqe_timeout)
+    print(f"  Qiskit UpCCD ...", end="", flush=True)
+    qk = _run_qiskit_vqe(hf, norb, nelec, "UpCCD", timeout_s=cfg.vqe_timeout,
+                          mps_bond_dim=cfg.mps_bond_dim, maxiter=cfg.cr2_maxiter)
     e_qk = qk.get("energy") if _ok(qk) else None
     if _ok(qk):
         print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
@@ -439,7 +506,7 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
 def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
                        fci_timeout=30, qiskit_timeout=180, maestro_timeout=0,
                        maxiter=200, mps_bond_dim=128, nelec_fn=None) -> list[dict]:
-    """For each norb, run FCI / Qiskit PUCCD / Maestro UpCCD.
+    """For each norb, run FCI / Qiskit UpCCD (native JW) / Maestro UpCCD.
 
     hf_or_builder: either a pyscf SCF object (shared HF, vary active space)
                    or a callable norb → gto.Mole (build a fresh molecule per norb).
@@ -477,7 +544,8 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
             qk = {"status": "skipped", "error": "skipped (prev timeout)"}
             qk_str = "skipped"
         else:
-            qk = _run_qiskit_vqe(hf, norb, nelec, "PUCCD", timeout_s=qiskit_timeout)
+            qk = _run_qiskit_vqe(hf, norb, nelec, "UpCCD", timeout_s=qiskit_timeout,
+                                  mps_bond_dim=mps_bond_dim, maxiter=maxiter)
             if qk.get("status") == "timeout":
                 qk_skip = True
             qk_str = (f"{qk['time']:.1f}s" if _ok(qk)
@@ -547,9 +615,10 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
             else:
                 print(f"  FCI        : timeout  ({n_q}q → {2**n_q:,} dim)")
 
-            print(f"  Qiskit PUCCD ...", end="", flush=True)
-            qk = _run_qiskit_vqe(hf, main_norb, main_nelec, "PUCCD",
-                                  timeout_s=cfg.vqe_timeout, mps_bond_dim=cfg.mps_bond_dim)
+            print(f"  Qiskit UpCCD ...", end="", flush=True)
+            qk = _run_qiskit_vqe(hf, main_norb, main_nelec, "UpCCD",
+                                  timeout_s=cfg.vqe_timeout, mps_bond_dim=cfg.mps_bond_dim,
+                                  maxiter=cfg.main_maxiter)
             e_qk = qk.get("energy") if _ok(qk) else None
             if _ok(qk):
                 print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
@@ -664,7 +733,7 @@ STYLE = {
     "CCSD":          {"color": "#e67e22", "marker": "s", "ls": "--"},
     "CCSD(T)":       {"color": "#f39c12", "marker": "D", "ls": "--"},
     "FCI":           {"color": "#27ae60", "marker": "*", "ls": "-"},
-    "Qiskit PUCCD":  {"color": "#8e44ad", "marker": "P", "ls": "-."},
+    "Qiskit UpCCD":  {"color": "#8e44ad", "marker": "P", "ls": "-."},
     "Maestro UpCCD": {"color": "#2980b9", "marker": "o", "ls": "-"},
 }
 
@@ -733,7 +802,7 @@ def plot_case2(data: dict, out_dir: Path):
         e = data.get(key)
         if e is not None:
             energy_pairs.append((label, e))
-    for label, key in [("Qiskit PUCCD", "qiskit"), ("Maestro UpCCD", "maestro")]:
+    for label, key in [("Qiskit UpCCD", "qiskit"), ("Maestro UpCCD", "maestro")]:
         d = data.get(key, {})
         if _ok(d):
             energy_pairs.append((label, d["energy"]))
@@ -755,7 +824,7 @@ def plot_case2(data: dict, out_dir: Path):
         t = data.get(t_key)
         if t is not None:
             time_pairs.append((label, t))
-    for label, key in [("Qiskit PUCCD", "qiskit"), ("Maestro UpCCD", "maestro")]:
+    for label, key in [("Qiskit UpCCD", "qiskit"), ("Maestro UpCCD", "maestro")]:
         d = data.get(key, {})
         if _ok(d):
             time_pairs.append((label, d["time"]))
@@ -813,7 +882,7 @@ def plot_scaling(data: dict, out_dir: Path, filename: str):
     qk_t_cap  = data.get("sweep_qk_timeout",  180)
     for label, times, cap in [
         ("FCI",           [r["t_fci"]                                  for r in sweep], fci_t_cap),
-        ("Qiskit PUCCD",  [r["qiskit"].get("time") if _ok(r["qiskit"]) else None for r in sweep], qk_t_cap),
+        ("Qiskit UpCCD",  [r["qiskit"].get("time") if _ok(r["qiskit"]) else None for r in sweep], qk_t_cap),
         ("Maestro UpCCD", [r["maestro"].get("time") if _ok(r["maestro"]) else None for r in sweep], None),
     ]:
         xs, ys = _filter(norb_arr, times)
@@ -856,7 +925,7 @@ def plot_scaling(data: dict, out_dir: Path, filename: str):
     ax_e = axes[1]
 
     for label, errs in [
-        ("Qiskit PUCCD",  [r.get("err_qiskit_mha")  for r in sweep]),
+        ("Qiskit UpCCD",  [r.get("err_qiskit_mha")  for r in sweep]),
         ("Maestro UpCCD", [r.get("err_maestro_mha") for r in sweep]),
     ]:
         st = _st(label)
@@ -889,7 +958,7 @@ def plot_scaling(data: dict, out_dir: Path, filename: str):
         pairs = []
         if main.get("e_hf")  is not None: pairs.append(("HF",           main["e_hf"]))
         if main.get("e_fci") is not None: pairs.append(("FCI",          main["e_fci"]))
-        if _ok(main.get("qiskit",  {})):  pairs.append(("Qiskit PUCCD", main["qiskit"]["energy"]))
+        if _ok(main.get("qiskit",  {})):  pairs.append(("Qiskit UpCCD", main["qiskit"]["energy"]))
         if _ok(main.get("maestro", {})):  pairs.append(("Maestro UpCCD",main["maestro"]["energy"]))
 
         if pairs:
