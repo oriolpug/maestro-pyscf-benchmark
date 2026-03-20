@@ -100,7 +100,7 @@ class BenchmarkConfig:
 
 
 FULL = BenchmarkConfig(
-    n2_norb_sweep       = [4, 10, 14, 18],
+    n2_norb_sweep       = [4, 7, 10, 14, 18],
     n2_fci_timeout      = 3600,
     n2_maxiter          = 300,
 
