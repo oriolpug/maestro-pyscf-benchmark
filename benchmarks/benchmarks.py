@@ -263,7 +263,7 @@ def _build_qiskit_upccd_circuit(norb: int, nelec: tuple):
         qc.cx(p, q)
         qc.cx(r, s)
         qc.cx(p, r)
-        qc.ry(p, 2 * theta)
+        qc.ry(2 * theta, p)
         qc.cx(p, r)
         qc.cx(r, s)
         qc.cx(p, q)
@@ -360,7 +360,7 @@ def _run_qiskit_vqe(hf, norb, nelec, ansatz_type="UpCCD", timeout_s=0, mps_bond_
                         options={"maxiter": maxiter, "rhobeg": 0.3})
         return {"status": "ok", "energy": opt.fun + ecore,
                 "time": time.perf_counter() - t0,
-                "n_params": n_params, "n_iter": opt.nit,
+                "n_params": n_params, "n_iter": opt.get("nfev", opt.get("nit", 0)),
                 "converged": bool(opt.success),
                 "simulation": simulation,
                 "n_qubits": n_qubits}
