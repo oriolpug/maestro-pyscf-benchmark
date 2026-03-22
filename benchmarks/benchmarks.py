@@ -394,7 +394,8 @@ def _ok(d): return isinstance(d, dict) and d.get("status") == "ok"
 
 # ── Case 1: N₂ dissociation ───────────────────────────────────────────────────
 
-def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
+def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig,
+                   run_qiskit: bool = True, run_maestro: bool = True) -> dict:
     """N₂ cc-pvdz — active-space scaling sweep at equilibrium geometry (d = 1.098 Å).
 
     Sweeps norb from small (FCI trivial) through large (FCI intractable, needs MPS/quantum).
@@ -427,6 +428,8 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
         maxiter=cfg.n2_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
         nelec_fn=nelec_fn,
+        run_qiskit=run_qiskit,
+        run_maestro=run_maestro,
     )
 
     return {
@@ -445,7 +448,8 @@ def bench_case1_n2(gpu: bool, cfg: BenchmarkConfig) -> dict:
 
 # ── Case 2: Cr₂ dimer ─────────────────────────────────────────────────────────
 
-def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
+def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig,
+                    run_qiskit: bool = True, run_maestro: bool = True) -> dict:
     """Cr₂ CAS(12e,12o) cc-pvdz — single geometry (d = 1.68 Å)."""
     norb, nelec = 12, (6, 6)
     n_qubits    = 2 * norb    # 24q → Maestro MPS; Qiskit parity → 22q (very slow)
@@ -468,23 +472,31 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
     else:
         print(f"  FCI     : timeout  ({n_qubits}q → {2**n_qubits:,} dim)")
 
-    print(f"  Qiskit UpCCD ...", end="", flush=True)
-    qk = _run_qiskit_vqe(hf, norb, nelec, "UpCCD", timeout_s=cfg.vqe_timeout,
-                          mps_bond_dim=cfg.mps_bond_dim, maxiter=cfg.cr2_maxiter)
-    e_qk = qk.get("energy") if _ok(qk) else None
-    if _ok(qk):
-        print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
+    if run_qiskit:
+        print(f"  Qiskit UpCCD ...", end="", flush=True)
+        qk = _run_qiskit_vqe(hf, norb, nelec, "UpCCD", timeout_s=cfg.vqe_timeout,
+                              mps_bond_dim=cfg.mps_bond_dim, maxiter=cfg.cr2_maxiter)
+        e_qk = qk.get("energy") if _ok(qk) else None
+        if _ok(qk):
+            print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
+        else:
+            print(f"  {qk.get('status', 'FAILED')}: {qk.get('error', '')}")
     else:
-        print(f"  {qk.get('status', 'FAILED')}: {qk.get('error', '')}")
+        qk = {"status": "skipped", "error": "disabled"}
+        e_qk = None
 
-    print(f"  Maestro UpCCD MPS ...", end="", flush=True)
-    m  = _run_maestro(hf, norb, nelec, "upccd", "gpu" if gpu else "cpu",
-                      maxiter=cfg.cr2_maxiter, mps_bond_dim=cfg.mps_bond_dim)
-    e_m = m.get("energy") if _ok(m) else None
-    if _ok(m):
-        print(f"  ok: {_fmt(e_m)} Ha  ({m['time']:.1f}s)  iters={m.get('iters')}")
+    if run_maestro:
+        print(f"  Maestro UpCCD MPS ...", end="", flush=True)
+        m = _run_maestro(hf, norb, nelec, "upccd", "gpu" if gpu else "cpu",
+                         maxiter=cfg.cr2_maxiter, mps_bond_dim=cfg.mps_bond_dim)
+        e_m = m.get("energy") if _ok(m) else None
+        if _ok(m):
+            print(f"  ok: {_fmt(e_m)} Ha  ({m['time']:.1f}s)  iters={m.get('iters')}")
+        else:
+            print(f"  {m.get('status', 'FAILED')}: {m.get('error', '')[:80]}")
     else:
-        print(f"  {m.get('status', 'FAILED')}: {m.get('error', '')[:80]}")
+        m = {"status": "skipped", "error": "disabled"}
+        e_m = None
 
     ref     = e_fci if e_fci is not None else e_ccsdt
     ref_lbl = "FCI"  if e_fci is not None else "CCSD(T)"
@@ -505,7 +517,8 @@ def bench_case2_cr2(gpu: bool, cfg: BenchmarkConfig) -> dict:
 
 def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
                        fci_timeout=30, qiskit_timeout=180, maestro_timeout=0,
-                       maxiter=200, mps_bond_dim=128, nelec_fn=None) -> list[dict]:
+                       maxiter=200, mps_bond_dim=128, nelec_fn=None,
+                       run_qiskit=True, run_maestro=True) -> list[dict]:
     """For each norb, run FCI / Qiskit UpCCD (native JW) / Maestro UpCCD.
 
     hf_or_builder: either a pyscf SCF object (shared HF, vary active space)
@@ -540,7 +553,10 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
         e_fci, t_fci = _run_fci(hf, norb, nelec, timeout_s=fci_timeout)
         fci_str = f"{t_fci:.1f}s" if t_fci is not None else f">{fci_timeout}s (TO)"
 
-        if qk_skip:
+        if not run_qiskit:
+            qk = {"status": "skipped", "error": "disabled"}
+            qk_str = "—"
+        elif qk_skip:
             qk = {"status": "skipped", "error": "skipped (prev timeout)"}
             qk_str = "skipped"
         else:
@@ -552,7 +568,10 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
                       else f">{qiskit_timeout}s ({qk.get('status','?')})")
         qk_ok = _ok(qk)
 
-        if m_skip:
+        if not run_maestro:
+            m = {"status": "skipped", "error": "disabled"}
+            m_str = "—"
+        elif m_skip:
             m = {"status": "skipped", "error": "skipped (prev timeout)"}
             m_str = "skipped"
         else:
@@ -592,7 +611,8 @@ def _run_scaling_sweep(hf_or_builder, norb_values: list[int], gpu: bool,
 def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
                         main_norb: int, main_nelec: tuple,
                         norb_sweep: list[int], gpu: bool,
-                        cfg: BenchmarkConfig) -> dict:
+                        cfg: BenchmarkConfig,
+                        run_qiskit: bool = True, run_maestro: bool = True) -> dict:
     """Run a main CASCI benchmark (if geometry available) + norb scaling sweep.
 
     If geo_path is None or missing: skip main benchmark, use H-chain for sweep.
@@ -615,25 +635,33 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
             else:
                 print(f"  FCI        : timeout  ({n_q}q → {2**n_q:,} dim)")
 
-            print(f"  Qiskit UpCCD ...", end="", flush=True)
-            qk = _run_qiskit_vqe(hf, main_norb, main_nelec, "UpCCD",
-                                  timeout_s=cfg.vqe_timeout, mps_bond_dim=cfg.mps_bond_dim,
-                                  maxiter=cfg.main_maxiter)
-            e_qk = qk.get("energy") if _ok(qk) else None
-            if _ok(qk):
-                print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
+            if run_qiskit:
+                print(f"  Qiskit UpCCD ...", end="", flush=True)
+                qk = _run_qiskit_vqe(hf, main_norb, main_nelec, "UpCCD",
+                                      timeout_s=cfg.vqe_timeout, mps_bond_dim=cfg.mps_bond_dim,
+                                      maxiter=cfg.main_maxiter)
+                e_qk = qk.get("energy") if _ok(qk) else None
+                if _ok(qk):
+                    print(f"  ok: {_fmt(e_qk)} Ha  ({qk['time']:.1f}s)")
+                else:
+                    print(f"  {qk.get('status', '?')}: {qk.get('error', '')}")
             else:
-                print(f"  {qk.get('status', '?')}: {qk.get('error', '')}")
+                qk = {"status": "skipped", "error": "disabled"}
+                e_qk = None
 
-            print(f"  Maestro UpCCD ...", end="", flush=True)
-            m  = _run_maestro(hf, main_norb, main_nelec, "upccd",
-                              "gpu" if gpu else "cpu",
-                              maxiter=cfg.main_maxiter, mps_bond_dim=cfg.mps_bond_dim)
-            e_m = m.get("energy") if _ok(m) else None
-            if _ok(m):
-                print(f"  ok: {_fmt(e_m)} Ha  ({m['time']:.1f}s)  iters={m.get('iters')}")
+            if run_maestro:
+                print(f"  Maestro UpCCD ...", end="", flush=True)
+                m = _run_maestro(hf, main_norb, main_nelec, "upccd",
+                                 "gpu" if gpu else "cpu",
+                                 maxiter=cfg.main_maxiter, mps_bond_dim=cfg.mps_bond_dim)
+                e_m = m.get("energy") if _ok(m) else None
+                if _ok(m):
+                    print(f"  ok: {_fmt(e_m)} Ha  ({m['time']:.1f}s)  iters={m.get('iters')}")
+                else:
+                    print(f"  {m.get('status', '?')}: {m.get('error', '')[:80]}")
             else:
-                print(f"  {m.get('status', '?')}: {m.get('error', '')[:80]}")
+                m = {"status": "skipped", "error": "disabled"}
+                e_m = None
 
             ref = e_fci
             main_result = {
@@ -668,6 +696,8 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
         maestro_timeout=cfg.vqe_timeout,
         maxiter=cfg.sweep_maxiter,
         mps_bond_dim=cfg.mps_bond_dim,
+        run_qiskit=run_qiskit,
+        run_maestro=run_maestro,
     )
 
     return {
@@ -685,7 +715,8 @@ def _bench_with_scaling(case_name: str, geo_path, mol_kwargs: dict,
     }
 
 
-def bench_case3_fe2s2(gpu: bool, cfg: BenchmarkConfig) -> dict:
+def bench_case3_fe2s2(gpu: bool, cfg: BenchmarkConfig,
+                      run_qiskit: bool = True, run_maestro: bool = True) -> dict:
     """Fe₂S₂ cluster: CAS(14e,14o) def2-svp + norb scaling sweep."""
     geo = GEO_DIR / "fe2s2_cluster.xyz"
     print(f"\n[Case 3] Fe₂S₂ Cluster  CAS(14e,14o) = 28q  def2-svp")
@@ -696,10 +727,12 @@ def bench_case3_fe2s2(gpu: bool, cfg: BenchmarkConfig) -> dict:
         main_norb=14, main_nelec=(7, 7),
         norb_sweep=cfg.norb_sweep_3,
         gpu=gpu, cfg=cfg,
+        run_qiskit=run_qiskit, run_maestro=run_maestro,
     )
 
 
-def bench_case4_feporphine(gpu: bool, cfg: BenchmarkConfig) -> dict:
+def bench_case4_feporphine(gpu: bool, cfg: BenchmarkConfig,
+                           run_qiskit: bool = True, run_maestro: bool = True) -> dict:
     """Fe-Porphine: CAS(22e,22o) cc-pvdz + norb scaling sweep."""
     geo = GEO_DIR / "fe_porphine.xyz"
     print(f"\n[Case 4] Fe-Porphine  CAS(22e,22o) = 44q  cc-pvdz")
@@ -710,6 +743,7 @@ def bench_case4_feporphine(gpu: bool, cfg: BenchmarkConfig) -> dict:
         main_norb=22, main_nelec=(11, 11),
         norb_sweep=cfg.norb_sweep_4,
         gpu=gpu, cfg=cfg,
+        run_qiskit=run_qiskit, run_maestro=run_maestro,
     )
 
 
@@ -1027,6 +1061,11 @@ examples
     to_grp.add_argument("--no-timeout", action="store_true",
                         help="Remove all VQE time limits (equivalent to --timeout 0)")
     parser.add_argument("--gpu",        action="store_true", help="Maestro GPU backend")
+    sv_grp = parser.add_mutually_exclusive_group()
+    sv_grp.add_argument("--maestro",    action="store_true",
+                        help="Run Maestro only (skip Qiskit)")
+    sv_grp.add_argument("--qiskit",     action="store_true",
+                        help="Run Qiskit only (skip Maestro)")
     parser.add_argument("--case1",      action="store_true", help="N₂ dissociation")
     parser.add_argument("--case2",      action="store_true", help="Cr₂ dimer")
     parser.add_argument("--case3",      action="store_true", help="Fe₂S₂ + scaling")
@@ -1043,6 +1082,8 @@ examples
 
     cfg    = SMALL if args.small else FULL
     mode   = "small" if args.small else "full"
+    run_qiskit  = not args.maestro   # True unless --maestro
+    run_maestro = not args.qiskit    # True unless --qiskit
     if args.no_timeout or args.timeout == 0:
         cfg = dataclasses.replace(cfg, vqe_timeout=0)
     elif args.timeout is not None:
@@ -1059,6 +1100,9 @@ examples
         print("  MAESTRO vs QISKIT vs PYSCF — BENCHMARK SUITE")
         print(f"  Mode    : {mode}  (--small for fast prototyping, full for cluster)")
         print(f"  GPU     : {'enabled' if args.gpu else 'disabled'}")
+        solvers_str = ("Maestro only" if args.maestro else
+                       "Qiskit only"  if args.qiskit  else "Maestro + Qiskit")
+        print(f"  Solvers : {solvers_str}")
         print(f"  Cases   : {', '.join(to_run)}")
         timeout_str = "none" if cfg.vqe_timeout == 0 else f"{cfg.vqe_timeout}s"
         print(f"  Timeout : {timeout_str} per VQE call (Qiskit & Maestro)")
@@ -1070,10 +1114,14 @@ examples
         print("=" * 72)
 
         dispatch = {
-            "case1": lambda: bench_case1_n2(args.gpu, cfg),
-            "case2": lambda: bench_case2_cr2(args.gpu, cfg),
-            "case3": lambda: bench_case3_fe2s2(args.gpu, cfg),
-            "case4": lambda: bench_case4_feporphine(args.gpu, cfg),
+            "case1": lambda: bench_case1_n2(args.gpu, cfg,
+                                            run_qiskit=run_qiskit, run_maestro=run_maestro),
+            "case2": lambda: bench_case2_cr2(args.gpu, cfg,
+                                             run_qiskit=run_qiskit, run_maestro=run_maestro),
+            "case3": lambda: bench_case3_fe2s2(args.gpu, cfg,
+                                               run_qiskit=run_qiskit, run_maestro=run_maestro),
+            "case4": lambda: bench_case4_feporphine(args.gpu, cfg,
+                                                    run_qiskit=run_qiskit, run_maestro=run_maestro),
         }
 
         results = {
