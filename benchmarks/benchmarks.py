@@ -187,8 +187,12 @@ def _run_fci(hf, norb, nelec, timeout_s=60) -> tuple[float | None, float | None]
         cas = mcscf.CASCI(hf, norb, nelec); cas.verbose = 0
         return cas.kernel()[0], time.perf_counter() - t0
     try:
-        return _timed(_do, timeout_s)
-    except (TimeoutError, Exception):
+        return _timed(_do, timeout_s) if timeout_s > 0 else _do()
+    except TimeoutError:
+        return None, None
+    except Exception:
+        print(f"    FCI error (norb={norb}, nelec={nelec}):")
+        print(traceback.format_exc())
         return None, None
 
 
@@ -1087,7 +1091,9 @@ examples
     run_qiskit  = not (args.maestro or args.fci)
     run_maestro = not (args.qiskit  or args.fci)
     if args.no_timeout or args.timeout == 0:
-        cfg = dataclasses.replace(cfg, vqe_timeout=0)
+        cfg = dataclasses.replace(cfg, vqe_timeout=0,
+                                  n2_fci_timeout=0, cr2_fci_timeout=0,
+                                  main_fci_timeout=0, sweep_fci_timeout=0)
     elif args.timeout is not None:
         cfg = dataclasses.replace(cfg, vqe_timeout=args.timeout)
 
