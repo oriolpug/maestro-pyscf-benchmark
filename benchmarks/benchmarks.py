@@ -1066,6 +1066,8 @@ examples
                         help="Run Maestro only (skip Qiskit)")
     sv_grp.add_argument("--qiskit",     action="store_true",
                         help="Run Qiskit only (skip Maestro)")
+    sv_grp.add_argument("--fci",        action="store_true",
+                        help="Run FCI only (skip Maestro and Qiskit)")
     parser.add_argument("--case1",      action="store_true", help="N₂ dissociation")
     parser.add_argument("--case2",      action="store_true", help="Cr₂ dimer")
     parser.add_argument("--case3",      action="store_true", help="Fe₂S₂ + scaling")
@@ -1082,8 +1084,8 @@ examples
 
     cfg    = SMALL if args.small else FULL
     mode   = "small" if args.small else "full"
-    run_qiskit  = not args.maestro   # True unless --maestro
-    run_maestro = not args.qiskit    # True unless --qiskit
+    run_qiskit  = not (args.maestro or args.fci)
+    run_maestro = not (args.qiskit  or args.fci)
     if args.no_timeout or args.timeout == 0:
         cfg = dataclasses.replace(cfg, vqe_timeout=0)
     elif args.timeout is not None:
@@ -1101,7 +1103,8 @@ examples
         print(f"  Mode    : {mode}  (--small for fast prototyping, full for cluster)")
         print(f"  GPU     : {'enabled' if args.gpu else 'disabled'}")
         solvers_str = ("Maestro only" if args.maestro else
-                       "Qiskit only"  if args.qiskit  else "Maestro + Qiskit")
+                       "Qiskit only"  if args.qiskit  else
+                       "FCI only"     if args.fci     else "Maestro + Qiskit")
         print(f"  Solvers : {solvers_str}")
         print(f"  Cases   : {', '.join(to_run)}")
         timeout_str = "none" if cfg.vqe_timeout == 0 else f"{cfg.vqe_timeout}s"
