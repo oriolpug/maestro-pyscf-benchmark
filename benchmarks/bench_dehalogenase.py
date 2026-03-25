@@ -196,6 +196,64 @@ def _run_maestro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64, **kwargs) ->
                 "traceback": traceback.format_exc()}
 
 
+# ── QSCI runner (qiskit-addon-sqd) ───────────────────────────────────────────
+
+def _run_qsci(hf, norb, nelec, num_samples: int = 200, rand_seed: int = 42) -> dict:
+    """QSCI via qiskit-addon-sqd with uniform random bitstring sampling.
+
+    Projects the Hamiltonian onto the subspace spanned by `num_samples`
+    randomly sampled bitstrings with the correct electron count, then
+    diagonalises exactly within that subspace.  Uses the same PySCF
+    active-space integrals as FCI and Maestro — all three methods are
+    directly comparable.
+
+    In production QSCI the bitstrings come from sampling a quantum circuit
+    (e.g. a hardware VQE state); here uniform random sampling is used as a
+    tractable classical proxy.  At n_samples ≈ 1000 the random subspace
+    covers enough of the FCI space to recover the exact energy for this
+    active space.
+    """
+    try:
+        from qiskit_addon_sqd.fermion import solve_fermion
+        from qiskit_addon_sqd.counts import (
+            generate_counts_bipartite_hamming, counts_to_arrays,
+        )
+        from pyscf import ao2mo
+    except ImportError as exc:
+        return {"status": "failed", "error": str(exc)}
+
+    try:
+        nalpha, nbeta = nelec
+        cas = mcscf.CASCI(hf, norb, nelec)
+        cas.verbose = 0
+        h1e, ecore = cas.get_h1eff()
+        h2e = ao2mo.restore(1, cas.get_h2eff(), norb)
+
+        counts = generate_counts_bipartite_hamming(
+            num_samples, 2 * norb,
+            hamming_right=nalpha,  # alpha (spin-up) in right half
+            hamming_left=nbeta,    # beta (spin-down) in left half
+            rand_seed=rand_seed,
+        )
+        bsm, _ = counts_to_arrays(counts)  # shape (n_unique, 2*norb), bool
+
+        t0 = time.perf_counter()
+        e_elec, _, _, _ = solve_fermion(bsm, hcore=h1e, eri=h2e)
+        elapsed = time.perf_counter() - t0
+
+        return {
+            "status":     "ok",
+            "energy":     float(e_elec + ecore),
+            "time":       elapsed,
+            "n_samples":  num_samples,
+            "n_det":      int(bsm.shape[0]),  # unique determinants after dedup
+        }
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"\n  [QSCI] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
+
+
 # ── Qrunch single-frame runner ────────────────────────────────────────────────
 
 def _try_import_qrunch():
@@ -326,8 +384,9 @@ def bench_dehalogenase(
     ansatz: str = "upccd",
     maxiter: int = 50,
     run_qrunch: bool = True,
+    sqd_samples: int = 200,
 ) -> dict:
-    """Dehalogenase SN2 — FCI / Maestro / Qrunch CI / Qrunch VQE per frame."""
+    """Dehalogenase SN2 — FCI / QSCI / Maestro / Qrunch CI / Qrunch VQE per frame."""
     if not DEHALOGENASE_XYZ.exists():
         raise FileNotFoundError(
             f"Geometry not found: {DEHALOGENASE_XYZ}\n"
@@ -352,7 +411,9 @@ def bench_dehalogenase(
           f"ansatz={ansatz}  χ={mps_bond_dim}  maxiter={maxiter}")
     print(f"  Frames  : {frame_indices}")
     print(f"  Qrunch  : {'available' if qrunch_available else f'skipped ({qrunch_skip_reason})'}")
-    print(f"  err_M   = E_Maestro  − E_FCI        (bare PySCF variational error)")
+    print(f"  QSCI n_samples={sqd_samples} (uniform random; use --sqd-samples to tune)")
+    print(f"  err_M   = E_Maestro  − E_FCI        (Maestro variational error)")
+    print(f"  err_SQD = E_QSCI     − E_FCI        (QSCI subspace error)")
     print(f"  err_VQE = E_FAST-VQE − E_Qrunch_CI  (Qrunch VQE variational error)")
     print(f"  ΔE      = E(frame)   − E(frame 0)   (reaction energy profile)")
     qr_note = "" if qrunch_available else "  [Qrunch cols N/A]"
@@ -360,6 +421,8 @@ def bench_dehalogenase(
         f"\n  {'Frame':>5}  "
         f"{'HF (Ha)':>13} {'t':>6}  "
         f"{'FCI (Ha)':>13} {'t':>6}  "
+        f"{'QSCI (Ha)':>13} {'t':>6}  "
+        f"{'err_SQD (Ha)':>13}  "
         f"{'Maestro (Ha)':>13} {'t':>7}  "
         f"{'err_M (Ha)':>13}  "
         f"{'Qrunch CI (Ha)':>14} {'t':>7}  "
@@ -370,6 +433,7 @@ def bench_dehalogenase(
 
     records    = []
     e_fci0     = None
+    e_sqd0     = None
     e_m0       = None
     e_qci0     = None
     e_qvqe0    = None
@@ -385,8 +449,13 @@ def bench_dehalogenase(
         mol = _mol_from_atoms(sub_atoms, charge=-1, spin=0, basis="sto-3g")
         hf, t_hf = _run_hf(mol)
 
-        print(f"  {frame_idx:5d}  running FCI...", end="", flush=True)
+        print(f"  {frame_idx:5d}  FCI...", end="", flush=True)
         e_fci, t_fci = _run_casci_fci(hf, norb, nelec)
+
+        print(f"  QSCI...", end="", flush=True)
+        sqd = _run_qsci(hf, norb, nelec, num_samples=sqd_samples)
+        e_sqd = sqd.get("energy")
+        t_sqd = sqd.get("time")
 
         print(f"  Maestro...", end="", flush=True)
         mr  = _run_maestro(hf, norb, nelec, ansatz,
@@ -395,9 +464,9 @@ def bench_dehalogenase(
         e_m = mr.get("energy")
         t_m = mr.get("time")
 
-        # ── Qrunch (same 5-atom subsystem, no embedding) ─────────────────────
+        # ── Qrunch (same 5-atom subsystem, standard pipeline) ─────────────────
         if qrunch_available:
-            print(f"  Qrunch CI+VQE...", end="", flush=True)
+            print(f"  Qrunch...", end="", flush=True)
             qr = _run_qrunch_frame(sub_atoms, norb, nelec[0], frame_idx, qc)
         else:
             qr = {"status": "skipped"}
@@ -407,19 +476,23 @@ def bench_dehalogenase(
         e_qvqe  = qr.get("e_vqe")
         t_qvqe  = qr.get("t_vqe")
 
-        # Frame-0 references
+        # Frame-0 references for ΔE
         if e_fci0  is None and e_fci  is not None: e_fci0  = e_fci
+        if e_sqd0  is None and e_sqd  is not None: e_sqd0  = e_sqd
         if e_m0    is None and e_m    is not None: e_m0    = e_m
         if e_qci0  is None and e_qci  is not None: e_qci0  = e_qci
         if e_qvqe0 is None and e_qvqe is not None: e_qvqe0 = e_qvqe
 
-        err_m   = (e_m    - e_fci)  if (e_m   is not None and e_fci  is not None) else None
-        err_vqe = (e_qvqe - e_qci)  if (e_qvqe is not None and e_qci is not None) else None
+        err_sqd = (e_sqd  - e_fci) if (e_sqd  is not None and e_fci is not None) else None
+        err_m   = (e_m    - e_fci) if (e_m    is not None and e_fci is not None) else None
+        err_vqe = (e_qvqe - e_qci) if (e_qvqe is not None and e_qci is not None) else None
 
         print(
             f"\r  {frame_idx:5d}  "
             f"{_fe(hf.e_tot)} {_ft(t_hf)}  "
             f"{_fe(e_fci)} {_ft(t_fci)}  "
+            f"{_fe(e_sqd)} {_ft(t_sqd)}  "
+            f"{_fe(err_sqd)}  "
             f"{_fe(e_m)} {_ft(t_m)}  "
             f"{_fe(err_m)}  "
             f"{_fe(e_qci)} {_ft(t_qci)}  "
@@ -428,14 +501,17 @@ def bench_dehalogenase(
         )
 
         records.append({
-            "frame":          frame_idx,
-            "e_hf":           hf.e_tot,  "t_hf":   t_hf,
-            "e_fci":          e_fci,     "t_fci":  t_fci,
-            "maestro":        mr,
-            "err_maestro_ha": err_m,
+            "frame":              frame_idx,
+            "e_hf":               hf.e_tot,  "t_hf":  t_hf,
+            "e_fci":              e_fci,     "t_fci": t_fci,
+            "sqd":                sqd,
+            "err_sqd_ha":         err_sqd,
+            "maestro":            mr,
+            "err_maestro_ha":     err_m,
             "delta_e_fci_ha":     (e_fci  - e_fci0)  if (e_fci  and e_fci0)  else None,
+            "delta_e_sqd_ha":     (e_sqd  - e_sqd0)  if (e_sqd  and e_sqd0)  else None,
             "delta_e_maestro_ha": (e_m    - e_m0)    if (e_m    and e_m0)    else None,
-            "qrunch":         qr,
+            "qrunch":             qr,
             "err_qrunch_vqe_ha":  err_vqe,
             "delta_e_qci_ha":     (e_qci  - e_qci0)  if (e_qci  and e_qci0)  else None,
             "delta_e_qvqe_ha":    (e_qvqe - e_qvqe0) if (e_qvqe and e_qvqe0) else None,
@@ -444,15 +520,16 @@ def bench_dehalogenase(
     # ── ΔE reaction profile summary ───────────────────────────────────────────
     if len(records) > 1:
         print(f"\n  ΔE reaction profile (Ha, relative to frame {frame_indices[0]}):")
-        print(f"  {'Frame':>5}  {'ΔE_FCI':>13}  {'ΔE_Maestro':>13}  "
-              f"{'ΔE_Qrunch_CI':>13}  {'ΔE_FAST-VQE':>13}")
+        print(f"  {'Frame':>5}  {'ΔE_FCI':>13}  {'ΔE_QSCI':>13}  "
+              f"{'ΔE_Maestro':>13}  {'ΔE_Qrunch_CI':>13}  {'ΔE_FAST-VQE':>13}")
         for r in records:
             print(
                 f"  {r['frame']:5d}  "
-                f"{_fd(r['e_fci'],  e_fci0):>13}  "
-                f"{_fd(r['maestro'].get('energy'), e_m0):>13}  "
-                f"{_fd(r['qrunch'].get('e_ci'),  e_qci0):>13}  "
-                f"{_fd(r['qrunch'].get('e_vqe'), e_qvqe0):>13}"
+                f"{_fd(r['e_fci'],                   e_fci0):>13}  "
+                f"{_fd(r['sqd'].get('energy'),        e_sqd0):>13}  "
+                f"{_fd(r['maestro'].get('energy'),    e_m0):>13}  "
+                f"{_fd(r['qrunch'].get('e_ci'),       e_qci0):>13}  "
+                f"{_fd(r['qrunch'].get('e_vqe'),      e_qvqe0):>13}"
             )
 
     return {
@@ -466,6 +543,7 @@ def bench_dehalogenase(
         "mps_bond_dim":   mps_bond_dim,
         "frame_indices":  frame_indices,
         "qrunch_available": qrunch_available,
+        "sqd_samples":    sqd_samples,
         "records":        records,
     }
 
@@ -493,8 +571,11 @@ examples:
     parser.add_argument("--ansatz",    type=str, default="upccd",
                         choices=["upccd", "hardware_efficient"])
     parser.add_argument("--maxiter",   type=int, default=50)
+    parser.add_argument("--sqd-samples", type=int, default=200,
+                        help="Bitstring samples for QSCI (default: 200; "
+                             "~1000 recovers FCI for this active space)")
     parser.add_argument("--no-qrunch", action="store_true",
-                        help="Skip Qrunch (Pipeline B)")
+                        help="Skip Qrunch columns")
     parser.add_argument("--output",    type=str, default=None)
     args = parser.parse_args()
 
@@ -510,6 +591,7 @@ examples:
     print(f"  GPU     : {'enabled' if args.gpu else 'disabled'}")
     print(f"  χ       : {args.chi}  |  ansatz : {args.ansatz}  |  maxiter : {args.maxiter}")
     print(f"  Frames  : {frame_indices or DEFAULT_FRAMES}")
+    print(f"  QSCI    : n_samples={args.sqd_samples}")
     print(f"  Qrunch  : {'disabled' if args.no_qrunch else 'enabled (skipped if not installed)'}")
     print(f"  Date    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 72)
@@ -522,6 +604,7 @@ examples:
         ansatz=args.ansatz,
         maxiter=args.maxiter,
         run_qrunch=not args.no_qrunch,
+        sqd_samples=args.sqd_samples,
     )
     total_time = time.perf_counter() - t0
 
