@@ -1,0 +1,75 @@
+product_name = "Kvantify Qrunch"
+license_holder = "Oriol Bertomeu"
+license_holder_company = "Qoro Quantum"
+expiry_date = "2027-03-25"
+license_id = "9ddb5e0336c0"
+
+---
+LICENSE AGREEMENT
+
+THE PARTIES
+- The 'Customer': as detailed at beginning of file.
+- 'Kvantify': Kvantify ApS, Company reg. no. (CVR) 42958093, Rosenværget Allé 25, st., 2100 København Ø, Denmark.
+
+THE SERVICE
+Kvantify Qrunch chemistry QDK on-premise software platform
+
+SUBSCRIPTION
+The subscription is a free trial of one (1) year from the signing of the Agreement after which the Agreement automatically expires.
+
+EFFECTIVE DATE
+The license is effective one (1) year before expiration as detailed above.
+
+THE AGREEMENT
+By activating this license file, the Customer has agreed to be bound by the terms and conditions of this Agreement, including:
+- Schedule 1: Kvantify ApS' terms and conditions
+- Schedule 2: Privacy policy
+
+1 - PURPOSE AND BACKGROUND
+1.1 Kvantify provides to the Customer an on-premise software (the 'Service') used for quantum chemistry calculations.
+1.2 The Customer is granted a non-exclusive right to use the Service for which reason the Parties have entered into this Agreement.
+1.3 If there is any discrepancy between the provisions of the Agreement and the provisions of the Terms, the provisions of the Agreement shall take precedence.
+
+2 - GRANT OF LICENSE
+2.1 Kvantify grants to the Customer a non-exclusive right to use the Service on the terms and conditions set out in this Agreement and in the Terms.
+2.2 The Customer may not (by itself or any third party) create derivative works of the Platform.
+2.3 Notwithstanding clause 2.2, the Customer may develop, integrate and use supporting software to the Platform. The rights, title and legal ownership to such supporting software remain with the Customer.
+
+3 - PRICING
+3.1 The Customer shall have access to the Service from the effective date and until the date of expiry or termination of the Agreement in accordance with clause 3.
+3.2 The subscription is a free trial.
+
+4 - TERM AND TERMINATION
+4.1 The Agreement shall enter into force from the effective date and will continue to apply for one (1) year after which the Agreement automatically expires.
+4.2 In the free trial period, the Agreement can be terminated as set out below:
+  a) Both Parties can terminate the Agreement with a notice period of one (1) month.
+  b) If a Party materially breaches any duties under this Agreement or any material, relevant and implied conditions for entering into the Agreement, the other Party may terminate the Agreement without notice. A Party committing a material breach shall be liable to the other Party for any damages resulting from such material breach.
+4.3 Any termination must be given to the other Party as a written notice.
+4.4 Upon termination or expiry of this Agreement, irrespective of the cause, the Customer must return all equipment, hardware, software, etc. as well as all documents, manuals, drawings, technical data, etc. related to this Agreement and the business relations with Kvantify.
+
+5 - OPEN SOURCE NOTICE
+5.1 This product makes use of open-source software in the form of Python dependencies.
+5.2 A list of Python packages used by this software is available in requirements.txt. Each dependency is provided under its respective open-source license, as listed on PyPI, https://pypi.org/.
+5.4 Compiled Library: cppe
+5.4.1 Kvantify's Service distributes a precompiled version of the open-source package cppe, licensed under the GNU Lesser General Public License v3.0 (LGPL-3.0). The corresponding source code, license text, and build information are available via the same distribution channels as the compiled wheel file.
+5.4.2 The Agreement and Terms do not restrict reverse engineering where necessary to debug modifications to cppe as permitted under the LGPL-3.0.
+
+6 - SERVICE LEVEL
+6.1 This Service Level applies solely to the Customer's use of the Service during the free trial period.
+6.2 Support is provided on a best-effort basis by email. No guaranteed response times or resolution times apply.
+6.3 Kvantify is not obliged to provide bug fixes, error corrections, patches, upgrades, or updates during the trial period, whether arising from defects in the Service or from changes in external systems.
+6.4 Kvantify has no responsibility or obligation to ensure compatibility of the Service with changes to third-party services, platforms, or dependencies.
+
+7 - PRODUCT SPECIFICATIONS
+7.1 The Service consists of the QDK On-Premise software provided as a Python package.
+7.2 The Service is supported for installation and execution on versions of the following operating systems in versions compatible with dependencies as detailed below: Linux, macOS
+7.3 The detailed technical requirements (including dependencies, package versions, and configuration files) are delivered together with the Service in machine-readable form.
+
+8 - AMENDMENTS TO THE AGREEMENT OR THE TERMS
+8.1 Any amendments to the Agreement must be concluded in writing to achieve binding effect between the Parties.
+
+9 - CHOICE OF LAW AND JURISDICTION
+9.1 The Agreement is governed by Danish law. Any dispute between the Parties shall be resolved by the ordinary Danish courts in accordance with Danish law.
+9.2 The Parties will attempt to settle any dispute by negotiation in good faith.
+---
+signature: f439f4754cfa3b9842c1db999dae8477c8dfdf7862d7ad7a7eced06c860dd2c4892b55989980c484b6fe5291a0608123467eccc484a0669d7377b7029569dc0c

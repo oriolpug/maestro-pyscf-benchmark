@@ -236,6 +236,7 @@ def _run_qrunch_pipeline(
     """
     try:
         import qrunch as qc
+        qc.register_license_file(ROOT / "benchmarks/qrunch/license.txt")
     except ImportError:
         return {"status": "skipped", "reason": "qrunch not installed"}
     except Exception as exc:
