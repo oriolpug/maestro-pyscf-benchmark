@@ -77,7 +77,7 @@ readme = "README.md"
 packages = [{include = "qoro_maestro_pyscf"}]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = "~3.11"
 pyscf = ">=2.0"
 openfermion = ">=1.5"
 scipy = ">=1.7"
@@ -92,4 +92,10 @@ pytest-cov = "*"
 [tool.poetry.group.notebook.dependencies]
 jupyter = "*"
 matplotlib = "*"
+
+
+[[tool.poetry.source]]
+name = "kvantify"
+url = "https://dl.cloudsmith.io/7xQw91Fv8qVS26Nn/kvantify/qrunch/python/simple/"
+priority = "supplemental"
 
