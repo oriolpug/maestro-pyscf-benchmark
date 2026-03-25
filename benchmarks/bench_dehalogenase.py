@@ -213,29 +213,27 @@ def _try_import_qrunch():
 
 
 def _run_qrunch_frame(
-    full_frame_atoms: list[tuple[str, float, float, float]],
-    embedded_atoms: list[int],
+    sub_frame_atoms: list[tuple[str, float, float, float]],
+    norb: int,
+    nelec_alpha: int,
     frame_idx: int,
     qc,
 ) -> dict:
     """Run Qrunch CI + FAST-VQE for a single reaction frame.
 
-    Uses ground_state().projective_embedding() so each frame is independent
-    and per-frame timing is meaningful.  Embedding results are cached in
-    QRUNCH_CACHE/frame_N/ so the expensive DFT+MP2 setup is paid only once.
+    Uses ground_state().standard() on the same isolated 5-atom subsystem
+    as PySCF so that all methods solve the identical Hamiltonian and
+    energies are directly comparable.
 
     Returns {"status": "ok", "e_initial", "e_ci", "t_ci", "e_vqe", "t_vqe"}
     or       {"status": "failed", "error": ..., "traceback": ...}
     """
     try:
-        persister_dir = QRUNCH_CACHE / f"frame_{frame_idx}"
-        persister_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write the full 27-atom frame to a temp XYZ so qrunch can read it
+        # Write the 5-atom subsystem to a temp XYZ so qrunch can read it
         with tempfile.NamedTemporaryFile(suffix=".xyz", delete=False,
                                          mode="w") as tmp:
             tmp_path = Path(tmp.name)
-        _write_xyz(full_frame_atoms, tmp_path, comment=f"Frame {frame_idx}")
+        _write_xyz(sub_frame_atoms, tmp_path, comment=f"Frame {frame_idx}")
 
         try:
             mol_config = qc.build_molecular_configuration(
@@ -243,25 +241,15 @@ def _run_qrunch_frame(
                 basis_set="sto3g",
                 charge=-1,
                 spin_difference=0,
-                embedded_atoms=embedded_atoms,
             )
 
             problem_builder_creator = (
                 qc.problem_builder_creator()
                 .ground_state()
-                .projective_embedding()
-                .choose_full_system_solver().dft()
-                .choose_embedded_orbital_calculator().moller_plesset_2()
-                .choose_localizer().pipek_mezey()
-                .choose_orbital_assigner().total_weight(assignment_tolerance=0.2)
-                .choose_projector_builder().manby()
+                .standard()
                 .add_problem_modifier().active_space(
-                    number_of_active_spatial_orbitals=10,
-                    number_of_active_alpha_electrons=5,
-                )
-                .choose_data_persister_manager().file_persister(
-                    directory=persister_dir, extension=".qdk",
-                    load_policy="fallback",
+                    number_of_active_spatial_orbitals=norb,
+                    number_of_active_alpha_electrons=nelec_alpha,
                 )
             )
             problem_builder = problem_builder_creator.create()
@@ -277,8 +265,7 @@ def _run_qrunch_frame(
         t0       = time.perf_counter()
         ci_res   = ci_calc.calculate(problem)
         t_ci     = time.perf_counter() - t0
-        e_initial = float(ci_res.initial_total_energies.values[0])
-        e_ci      = float(ci_res.total_energies.values[0])
+        e_ci     = float(ci_res.total_energy.value)
 
         # FAST-VQE
         estimator     = qc.estimator_creator().excitation_gate().create()
@@ -298,7 +285,10 @@ def _run_qrunch_frame(
         t0      = time.perf_counter()
         vqe_res = vqe_calc.calculate(problem)
         t_vqe   = time.perf_counter() - t0
-        e_vqe   = float(vqe_res.total_energies.values[0])
+        e_vqe     = float(vqe_res.total_energy.value)
+        e_initial = float(
+            vqe_res.initial_total_energy.value
+        )
 
         return {"status": "ok",
                 "e_initial": e_initial,
@@ -405,10 +395,10 @@ def bench_dehalogenase(
         e_m = mr.get("energy")
         t_m = mr.get("time")
 
-        # ── Qrunch (full 27-atom system with projective embedding) ─────────────
+        # ── Qrunch (same 5-atom subsystem, no embedding) ─────────────────────
         if qrunch_available:
             print(f"  Qrunch CI+VQE...", end="", flush=True)
-            qr = _run_qrunch_frame(full_atoms, EMBEDDED_ATOM_INDICES, frame_idx, qc)
+            qr = _run_qrunch_frame(sub_atoms, norb, nelec[0], frame_idx, qc)
         else:
             qr = {"status": "skipped"}
 
