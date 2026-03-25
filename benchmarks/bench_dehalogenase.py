@@ -207,6 +207,8 @@ def _try_import_qrunch():
     except ImportError:
         return None, "qrunch not installed"
     except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"  [Qrunch] import/license error:\n{tb}")
         return None, str(exc)
 
 
@@ -304,8 +306,9 @@ def _run_qrunch_frame(
                 "e_vqe": e_vqe, "t_vqe": t_vqe}
 
     except Exception as exc:
-        return {"status": "failed", "error": str(exc),
-                "traceback": traceback.format_exc()}
+        tb = traceback.format_exc()
+        print(f"\n  [Qrunch frame {frame_idx}] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
 
 
 # ── Formatting ─────────────────────────────────────────────────────────────────
