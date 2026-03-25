@@ -75,7 +75,7 @@ CACHE_DIR = Path(__file__).parent / "cache"
 
 # Path to the Qrunch tutorial geometry
 DEHALOGENASE_XYZ = (
-    ROOT / "qrunch_tutorials/dehalogenase-tutorial/data/dehalogenase_reaction_small.xyz"
+    ROOT / "benchmarks/geometries/dehalogenase_data/dehalogenase_reaction_small.xyz"
 )
 # 0-based atom indices of the embedded reaction-center atoms: C, O, O, Cl, C
 EMBEDDED_ATOM_INDICES = [5, 6, 7, 18, 19]
