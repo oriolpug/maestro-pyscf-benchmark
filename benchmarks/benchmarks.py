@@ -1060,7 +1060,7 @@ def _filter(xs, ys):
 # ── Plot annotation helpers ───────────────────────────────────────────────────
 
 def _annotate_times(ax, xs, ys, color):
-    """Label each data point with its elapsed time in seconds."""
+    """Label each dehalogenase_data point with its elapsed time in seconds."""
     for x, y in zip(xs, ys):
         ax.annotate(f"{y:.1f}s", (x, y),
                     textcoords="offset points", xytext=(4, 5),

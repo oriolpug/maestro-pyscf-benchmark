@@ -571,6 +571,9 @@ examples:
     parser.add_argument("--ansatz",    type=str, default="upccd",
                         choices=["upccd", "hardware_efficient"])
     parser.add_argument("--maxiter",   type=int, default=50)
+    parser.add_argument("--norb",      type=int, default=NORB,
+                        help=f"Number of active spatial orbitals (default: {NORB} → {2*NORB} qubits); "
+                             "nelec is set to (norb//2, norb//2)")
     parser.add_argument("--sqd-samples", type=int, default=200,
                         help="Bitstring samples for QSCI (default: 200; "
                              "~1000 recovers FCI for this active space)")
@@ -588,9 +591,13 @@ examples:
 
     print("=" * 72)
     print("  DEHALOGENASE SN2 BENCHMARK")
+    norb  = args.norb
+    nelec = (norb // 2, norb // 2)
+
     print(f"  GPU     : {'enabled' if args.gpu else 'disabled'}")
     print(f"  χ       : {args.chi}  |  ansatz : {args.ansatz}  |  maxiter : {args.maxiter}")
     print(f"  Frames  : {frame_indices or DEFAULT_FRAMES}")
+    print(f"  norb    : {norb}  |  nelec : {nelec}  |  qubits : {2*norb}")
     print(f"  QSCI    : n_samples={args.sqd_samples}")
     print(f"  Qrunch  : {'disabled' if args.no_qrunch else 'enabled (skipped if not installed)'}")
     print(f"  Date    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -600,6 +607,8 @@ examples:
     result = bench_dehalogenase(
         gpu=args.gpu,
         frame_indices=frame_indices,
+        norb=norb,
+        nelec=nelec,
         mps_bond_dim=args.chi,
         ansatz=args.ansatz,
         maxiter=args.maxiter,
