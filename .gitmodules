@@ -1,0 +1,3 @@
+[submodule "qiskit-addon-sqd"]
+	path = qiskit-addon-sqd
+	url = https://github.com/Qiskit/qiskit-addon-sqd.git

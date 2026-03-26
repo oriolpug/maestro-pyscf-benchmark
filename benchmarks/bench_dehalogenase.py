@@ -23,24 +23,20 @@ reaction frame:
                  (DFT env + MP2 orbitals + Pipek-Mezey + Manby projector)
   Qrunch VQE   — FAST-VQE (adaptive excitation-gate) on the embedded Hamiltonian
 
-Note on comparability
----------------------
-  FCI and Maestro use the bare 5-atom embedded subsystem (no environment).
-  Qrunch CI and Qrunch VQE include the full 27-atom environment via projective
-  embedding.  Absolute energies differ between the two approaches; however the
-  reaction energy profiles ΔE (relative to frame 0) and the VQE errors
-  (E_VQE − E_exact) are directly comparable across methods.
+Modes
+-----
+  Standard (default): All solvers run on the isolated 5-atom subsystem
+  (27-atom geometry, STO-3G, max norb=13).  Energies are directly comparable.
 
-  Qrunch is run frame-by-frame via ground_state().projective_embedding() so
-  that per-frame timings are reported.  Embedding results are cached per frame
-  in benchmarks/cache/dehalogenase_qrunch/frame_N/ so the ~25-min setup is
-  paid only on the first run.
+  --big: Uses the 86-atom geometry with Qrunch projective embedding.
+  Qrunch builds the embedded Hamiltonian (DFT env + MP2 orbitals + Manby
+  projector), then ALL solvers (FCI, QSCI, Maestro, FAST-VQE) run on that
+  same active-space Hamiltonian.  Defaults: norb=20 (40 qubits), basis=pc-seg-1.
+  Use --norb to scale the active space up or down.
 
   err_M   = E_Maestro  − E_FCI       (Maestro variational error)
-  err_VQE = E_FAST-VQE − E_Qrunch_CI (Qrunch VQE variational error)
+  err_VQE = E_FAST-VQE − E_FCI       (FAST-VQE variational error)
   ΔE      = E(frame)   − E(frame 0)  (reaction energy profile)
-
-Qrunch columns show N/A when qrunch is not installed or the license is missing.
 
 Runtime notes
 -------------
@@ -81,13 +77,19 @@ CACHE_DIR    = Path(__file__).parent / "cache"
 QRUNCH_LICENSE = ROOT / "benchmarks/qrunch/license.txt"
 QRUNCH_CACHE   = CACHE_DIR / "dehalogenase_qrunch"
 
-DEHALOGENASE_XYZ = (
+DEHALOGENASE_SMALL_XYZ = (
     ROOT / "benchmarks/geometries/dehalogenase_data/dehalogenase_reaction_small.xyz"
 )
-EMBEDDED_ATOM_INDICES = [5, 6, 7, 18, 19]  # C, O, O, Cl, C (0-based, 27-atom model)
+DEHALOGENASE_LARGE_XYZ = (
+    ROOT / "benchmarks/geometries/dehalogenase_data/dehalogenase_reaction_large.xyz"
+)
+EMBEDDED_ATOM_INDICES_SMALL = [5, 6, 7, 18, 19]  # C, O, O, Cl, C (0-based, 27-atom)
+EMBEDDED_ATOM_INDICES_LARGE = [5, 6, 7, 74, 75]  # C, O, O, Cl, C (0-based, 86-atom)
 
 NORB  = 10
 NELEC = (5, 5)
+BIG_NORB  = 20   # 40 qubits, matching Kvantify showcase
+BIG_BASIS = "pc-seg-1"
 SV_QUBIT_LIMIT = 14
 
 DEFAULT_FRAMES = [0, 5, 10]
@@ -315,6 +317,86 @@ def _run_qrunch_frame(
         finally:
             tmp_path.unlink(missing_ok=True)
 
+        return _run_qrunch_solvers(problem, frame_idx, qc)
+
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"\n  [Qrunch frame {frame_idx}] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
+
+
+def _build_embedded_problem(
+    full_frame_atoms: list[tuple[str, float, float, float]],
+    embedded_atoms: list[int],
+    norb: int,
+    nelec_alpha: int,
+    frame_idx: int,
+    qc,
+    basis_set: str = "sto3g",
+):
+    """Build a Qrunch projective-embedding problem for the full system.
+
+    Returns the RestrictedGroundStateProblem with the embedded Hamiltonian.
+    Embedding results are cached in QRUNCH_CACHE/frame_N/.
+    """
+    persister_dir = QRUNCH_CACHE / f"frame_{frame_idx}"
+    persister_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(suffix=".xyz", delete=False,
+                                     mode="w") as tmp:
+        tmp_path = Path(tmp.name)
+    _write_xyz(full_frame_atoms, tmp_path, comment=f"Frame {frame_idx}")
+
+    try:
+        mol_config = qc.build_molecular_configuration(
+            molecule=tmp_path,
+            basis_set=basis_set,
+            charge=-1,
+            spin_difference=0,
+            embedded_atoms=embedded_atoms,
+        )
+
+        problem_builder_creator = (
+            qc.problem_builder_creator()
+            .ground_state()
+            .projective_embedding()
+            .choose_full_system_solver().dft()
+            .choose_embedded_orbital_calculator().moller_plesset_2()
+            .choose_localizer().pipek_mezey()
+            .choose_orbital_assigner().total_weight(assignment_tolerance=0.2)
+            .choose_projector_builder().manby()
+            .add_problem_modifier().active_space(
+                number_of_active_spatial_orbitals=norb,
+                number_of_active_alpha_electrons=nelec_alpha,
+            )
+            .choose_data_persister_manager().file_persister(
+                directory=persister_dir, extension=".qdk",
+                load_policy="fallback",
+            )
+        )
+        problem = problem_builder_creator.create().build_restricted(mol_config)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    return problem
+
+
+def _extract_integrals(problem):
+    """Extract h1e, h2e, ecore from a Qrunch RestrictedGroundStateProblem.
+
+    Returns (h1e, h2e, ecore) where ecore = environment + nuclear + inactive
+    energy offset, so that E_total = ecore + E_active(h1e, h2e).
+    """
+    esi   = problem.electronic_structure_integrals
+    h1e   = np.array(esi.one_body_core_hamiltonian.alpha_alpha)
+    h2e   = np.array(esi.two_body_electron_repulsion_integrals.alpha_alpha)
+    ecore = sum(v for _, v in problem.energy_contributions.items())
+    return h1e, h2e, float(ecore)
+
+
+def _run_qrunch_solvers(problem, frame_idx, qc) -> dict:
+    """Run Qrunch CI + FAST-VQE on an already-built problem."""
+    try:
         # CI reference
         ci_calc = (
             qc.calculator_creator()
@@ -344,9 +426,7 @@ def _run_qrunch_frame(
         vqe_res = vqe_calc.calculate(problem)
         t_vqe   = time.perf_counter() - t0
         e_vqe     = float(vqe_res.total_energy.value)
-        e_initial = float(
-            vqe_res.initial_total_energy.value
-        )
+        e_initial = float(vqe_res.initial_total_energy.value)
 
         return {"status": "ok",
                 "e_initial": e_initial,
@@ -356,6 +436,84 @@ def _run_qrunch_frame(
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"\n  [Qrunch frame {frame_idx}] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
+
+
+def _run_fci_on_integrals(h1e, h2e, norb, nelec, ecore, timeout_s=300):
+    """Run PySCF FCI directly on extracted integrals."""
+    from pyscf import fci
+    def _handler(signum, frame): raise TimeoutError
+    signal.signal(signal.SIGALRM, _handler); signal.alarm(timeout_s)
+    try:
+        t0 = time.perf_counter()
+        e_act, _ = fci.direct_spin1.kernel(h1e, h2e, norb, nelec, verbose=0)
+        return ecore + e_act, time.perf_counter() - t0
+    except TimeoutError:
+        return None, None
+    finally:
+        signal.alarm(0)
+
+
+def _run_maestro_on_integrals(h1e, h2e, norb, nelec, ecore,
+                              ansatz, backend, mps_bond_dim=64,
+                              **kwargs) -> dict:
+    """Run Maestro directly on extracted integrals."""
+    n_qubits   = 2 * norb
+    simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
+    kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
+              verbose=False, **kwargs)
+    if simulation == "mps":
+        kw["mps_bond_dim"] = mps_bond_dim
+    solver = MaestroSolver(**kw)
+    try:
+        t0 = time.perf_counter()
+        e_act, _ = solver.kernel(h1e, h2e, norb, nelec, ecore=0)
+        energy = ecore + e_act
+        return {"status": "ok", "energy": energy,
+                "time": time.perf_counter() - t0,
+                "simulation": simulation,
+                "mps_bond_dim": mps_bond_dim if simulation == "mps" else None,
+                "converged": solver.converged,
+                "iters": len(solver.energy_history)}
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc),
+                "traceback": traceback.format_exc()}
+
+
+def _run_qsci_on_integrals(h1e, h2e, norb, nelec, ecore,
+                            num_samples=200, rand_seed=42) -> dict:
+    """Run QSCI directly on extracted integrals."""
+    try:
+        from qiskit_addon_sqd.fermion import solve_fermion
+        from qiskit_addon_sqd.counts import (
+            generate_counts_bipartite_hamming, counts_to_arrays,
+        )
+    except ImportError as exc:
+        return {"status": "failed", "error": str(exc)}
+    try:
+        nalpha, nbeta = nelec
+        counts = generate_counts_bipartite_hamming(
+            num_samples, 2 * norb,
+            hamming_right=nalpha,
+            hamming_left=nbeta,
+            rand_seed=rand_seed,
+        )
+        bsm, _ = counts_to_arrays(counts)
+
+        t0 = time.perf_counter()
+        e_elec, _, _, _ = solve_fermion(bsm, hcore=h1e, eri=h2e)
+        elapsed = time.perf_counter() - t0
+
+        return {
+            "status":    "ok",
+            "energy":    float(e_elec + ecore),
+            "time":      elapsed,
+            "n_samples": num_samples,
+            "n_det":     int(bsm.shape[0]),
+        }
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"\n  [QSCI] ERROR: {exc}\n{tb}")
         return {"status": "failed", "error": str(exc), "traceback": tb}
 
 
@@ -385,47 +543,73 @@ def bench_dehalogenase(
     maxiter: int = 50,
     run_qrunch: bool = True,
     sqd_samples: int = 200,
+    big: bool = False,
+    basis_set: str = "sto-3g",
 ) -> dict:
-    """Dehalogenase SN2 — FCI / QSCI / Maestro / Qrunch CI / Qrunch VQE per frame."""
-    if not DEHALOGENASE_XYZ.exists():
+    """Dehalogenase SN2 — FCI / QSCI / Maestro / Qrunch CI / Qrunch VQE per frame.
+
+    When big=True, Qrunch builds the embedded Hamiltonian (projective embedding
+    on the full 27-atom system) and ALL solvers (FCI, QSCI, Maestro, Qrunch CI,
+    FAST-VQE) run on that same embedded active-space Hamiltonian.  This enables
+    larger active spaces (norb up to ~20) and makes all energies directly
+    comparable.
+    """
+    if big:
+        geom_path = DEHALOGENASE_LARGE_XYZ
+        embedded_indices = EMBEDDED_ATOM_INDICES_LARGE
+    else:
+        geom_path = DEHALOGENASE_SMALL_XYZ
+        embedded_indices = EMBEDDED_ATOM_INDICES_SMALL
+
+    if not geom_path.exists():
         raise FileNotFoundError(
-            f"Geometry not found: {DEHALOGENASE_XYZ}\n"
-            "Copy dehalogenase_reaction_small.xyz into "
+            f"Geometry not found: {geom_path}\n"
+            "Copy the required .xyz file into "
             "benchmarks/geometries/dehalogenase_data/."
         )
 
-    # Parse all frames: full 27-atom (for Qrunch) and 5-atom subset (for PySCF)
-    all_frames_full = _parse_xyz_frames(DEHALOGENASE_XYZ)
-    all_frames_sub  = _parse_xyz_frames(DEHALOGENASE_XYZ, EMBEDDED_ATOM_INDICES)
+    # Parse all frames: full system (for embedding) and embedded subset (for PySCF)
+    all_frames_full = _parse_xyz_frames(geom_path)
+    all_frames_sub  = _parse_xyz_frames(geom_path, embedded_indices)
 
     if frame_indices is None:
         frame_indices = DEFAULT_FRAMES
     n_qubits = 2 * norb
 
-    # Check qrunch availability once
-    qc, qrunch_skip_reason = (None, "--no-qrunch") if not run_qrunch \
+    # Qrunch is always required in --big mode
+    qc, qrunch_skip_reason = (None, "--no-qrunch") if (not run_qrunch and not big) \
         else _try_import_qrunch()
     qrunch_available = qc is not None
 
+    if big and not qrunch_available:
+        raise RuntimeError(
+            f"--big requires qrunch but it is not available: {qrunch_skip_reason}"
+        )
+
+    # Qrunch basis uses no dash (e.g. "sto3g" not "sto-3g")
+    qrunch_basis = basis_set.replace("-", "")
+
+    mode_label = "BIG (embedded)" if big else "standard (isolated)"
     print(f"\nDehalogenase SN2  CAS({sum(nelec)}e,{norb}o) = {n_qubits}q  "
           f"ansatz={ansatz}  χ={mps_bond_dim}  maxiter={maxiter}")
+    print(f"  Mode    : {mode_label}  basis={basis_set}")
     print(f"  Frames  : {frame_indices}")
     print(f"  Qrunch  : {'available' if qrunch_available else f'skipped ({qrunch_skip_reason})'}")
     print(f"  QSCI n_samples={sqd_samples} (uniform random; use --sqd-samples to tune)")
+    if big:
+        print(f"  All solvers use the same Qrunch-embedded Hamiltonian")
     print(f"  err_M   = E_Maestro  − E_FCI        (Maestro variational error)")
     print(f"  err_SQD = E_QSCI     − E_FCI        (QSCI subspace error)")
-    print(f"  err_VQE = E_FAST-VQE − E_Qrunch_CI  (Qrunch VQE variational error)")
+    print(f"  err_VQE = E_FAST-VQE − E_FCI        (Qrunch VQE variational error)")
     print(f"  ΔE      = E(frame)   − E(frame 0)   (reaction energy profile)")
     qr_note = "" if qrunch_available else "  [Qrunch cols N/A]"
     print(
         f"\n  {'Frame':>5}  "
-        f"{'HF (Ha)':>13} {'t':>6}  "
         f"{'FCI (Ha)':>13} {'t':>6}  "
         f"{'QSCI (Ha)':>13} {'t':>6}  "
         f"{'err_SQD (Ha)':>13}  "
         f"{'Maestro (Ha)':>13} {'t':>7}  "
         f"{'err_M (Ha)':>13}  "
-        f"{'Qrunch CI (Ha)':>14} {'t':>7}  "
         f"{'FAST-VQE (Ha)':>13} {'t':>7}  "
         f"{'err_VQE (Ha)':>13}"
         + qr_note
@@ -435,7 +619,6 @@ def bench_dehalogenase(
     e_fci0     = None
     e_sqd0     = None
     e_m0       = None
-    e_qci0     = None
     e_qvqe0    = None
 
     for frame_idx in frame_indices:
@@ -445,75 +628,113 @@ def bench_dehalogenase(
         sub_atoms  = all_frames_sub[frame_idx]
         full_atoms = all_frames_full[frame_idx]
 
-        # ── PySCF (bare 5-atom subsystem) ─────────────────────────────────────
-        mol = _mol_from_atoms(sub_atoms, charge=-1, spin=0, basis="sto-3g")
-        hf, t_hf = _run_hf(mol)
+        if big:
+            # ── BIG mode: Qrunch builds embedded problem, all solvers use it ──
+            print(f"  {frame_idx:5d}  Embedding...", end="", flush=True)
+            problem = _build_embedded_problem(
+                full_atoms, embedded_indices, norb, nelec[0],
+                frame_idx, qc, basis_set=qrunch_basis,
+            )
+            h1e, h2e, ecore = _extract_integrals(problem)
 
-        print(f"  {frame_idx:5d}  FCI...", end="", flush=True)
-        e_fci, t_fci = _run_casci_fci(hf, norb, nelec)
+            print(f"  FCI...", end="", flush=True)
+            e_fci, t_fci = _run_fci_on_integrals(h1e, h2e, norb, nelec, ecore)
 
-        print(f"  QSCI...", end="", flush=True)
-        sqd = _run_qsci(hf, norb, nelec, num_samples=sqd_samples)
-        e_sqd = sqd.get("energy")
-        t_sqd = sqd.get("time")
+            print(f"  QSCI...", end="", flush=True)
+            sqd = _run_qsci_on_integrals(
+                h1e, h2e, norb, nelec, ecore, num_samples=sqd_samples)
+            e_sqd = sqd.get("energy")
+            t_sqd = sqd.get("time")
 
-        print(f"  Maestro...", end="", flush=True)
-        mr  = _run_maestro(hf, norb, nelec, ansatz,
-                           "gpu" if gpu else "cpu",
-                           mps_bond_dim=mps_bond_dim, maxiter=maxiter)
-        e_m = mr.get("energy")
-        t_m = mr.get("time")
+            print(f"  Maestro...", end="", flush=True)
+            mr = _run_maestro_on_integrals(
+                h1e, h2e, norb, nelec, ecore, ansatz,
+                "gpu" if gpu else "cpu",
+                mps_bond_dim=mps_bond_dim, maxiter=maxiter)
+            e_m = mr.get("energy")
+            t_m = mr.get("time")
 
-        # ── Qrunch (same 5-atom subsystem, standard pipeline) ─────────────────
-        if qrunch_available:
-            print(f"  Qrunch...", end="", flush=True)
-            qr = _run_qrunch_frame(sub_atoms, norb, nelec[0], frame_idx, qc)
+            print(f"  Qrunch VQE...", end="", flush=True)
+            qr = _run_qrunch_solvers(problem, frame_idx, qc)
+
+            e_qvqe  = qr.get("e_vqe")
+            t_qvqe  = qr.get("t_vqe")
+
         else:
-            qr = {"status": "skipped"}
+            # ── Standard mode: PySCF on isolated 5-atom subsystem ─────────────
+            mol = _mol_from_atoms(sub_atoms, charge=-1, spin=0, basis=basis_set)
+            hf, t_hf = _run_hf(mol)
 
-        e_qci   = qr.get("e_ci")
-        t_qci   = qr.get("t_ci")
-        e_qvqe  = qr.get("e_vqe")
-        t_qvqe  = qr.get("t_vqe")
+            # Validate active space fits within available MOs
+            n_mo = hf.mo_coeff.shape[1]
+            n_core = (mol.nelectron - sum(nelec)) // 2
+            n_vir = n_mo - n_core - norb
+            if n_vir < 0:
+                raise ValueError(
+                    f"CAS({sum(nelec)}e,{norb}o) does not fit: "
+                    f"{n_mo} MOs in {basis_set}, {n_core} frozen core → "
+                    f"only {n_mo - n_core} orbitals available for active space. "
+                    f"Max norb = {n_mo - n_core}."
+                )
+
+            print(f"  {frame_idx:5d}  FCI...", end="", flush=True)
+            e_fci, t_fci = _run_casci_fci(hf, norb, nelec)
+
+            print(f"  QSCI...", end="", flush=True)
+            sqd = _run_qsci(hf, norb, nelec, num_samples=sqd_samples)
+            e_sqd = sqd.get("energy")
+            t_sqd = sqd.get("time")
+
+            print(f"  Maestro...", end="", flush=True)
+            mr  = _run_maestro(hf, norb, nelec, ansatz,
+                               "gpu" if gpu else "cpu",
+                               mps_bond_dim=mps_bond_dim, maxiter=maxiter)
+            e_m = mr.get("energy")
+            t_m = mr.get("time")
+
+            if qrunch_available:
+                print(f"  Qrunch...", end="", flush=True)
+                qr = _run_qrunch_frame(sub_atoms, norb, nelec[0], frame_idx, qc)
+            else:
+                qr = {"status": "skipped"}
+
+            e_qvqe  = qr.get("e_vqe")
+            t_qvqe  = qr.get("t_vqe")
 
         # Frame-0 references for ΔE
         if e_fci0  is None and e_fci  is not None: e_fci0  = e_fci
         if e_sqd0  is None and e_sqd  is not None: e_sqd0  = e_sqd
         if e_m0    is None and e_m    is not None: e_m0    = e_m
-        if e_qci0  is None and e_qci  is not None: e_qci0  = e_qci
         if e_qvqe0 is None and e_qvqe is not None: e_qvqe0 = e_qvqe
 
         err_sqd = (e_sqd  - e_fci) if (e_sqd  is not None and e_fci is not None) else None
         err_m   = (e_m    - e_fci) if (e_m    is not None and e_fci is not None) else None
-        err_vqe = (e_qvqe - e_qci) if (e_qvqe is not None and e_qci is not None) else None
+        err_vqe = (e_qvqe - e_fci) if (e_qvqe is not None and e_fci is not None) else None
 
         print(
             f"\r  {frame_idx:5d}  "
-            f"{_fe(hf.e_tot)} {_ft(t_hf)}  "
             f"{_fe(e_fci)} {_ft(t_fci)}  "
             f"{_fe(e_sqd)} {_ft(t_sqd)}  "
             f"{_fe(err_sqd)}  "
             f"{_fe(e_m)} {_ft(t_m)}  "
             f"{_fe(err_m)}  "
-            f"{_fe(e_qci)} {_ft(t_qci)}  "
             f"{_fe(e_qvqe)} {_ft(t_qvqe)}  "
             f"{_fe(err_vqe)}"
         )
 
         records.append({
             "frame":              frame_idx,
-            "e_hf":               hf.e_tot,  "t_hf":  t_hf,
+            "big_mode":           big,
             "e_fci":              e_fci,     "t_fci": t_fci,
             "sqd":                sqd,
             "err_sqd_ha":         err_sqd,
             "maestro":            mr,
             "err_maestro_ha":     err_m,
+            "e_qvqe":            e_qvqe,    "t_qvqe": t_qvqe,
+            "err_qrunch_vqe_ha": err_vqe,
             "delta_e_fci_ha":     (e_fci  - e_fci0)  if (e_fci  and e_fci0)  else None,
             "delta_e_sqd_ha":     (e_sqd  - e_sqd0)  if (e_sqd  and e_sqd0)  else None,
             "delta_e_maestro_ha": (e_m    - e_m0)    if (e_m    and e_m0)    else None,
-            "qrunch":             qr,
-            "err_qrunch_vqe_ha":  err_vqe,
-            "delta_e_qci_ha":     (e_qci  - e_qci0)  if (e_qci  and e_qci0)  else None,
             "delta_e_qvqe_ha":    (e_qvqe - e_qvqe0) if (e_qvqe and e_qvqe0) else None,
         })
 
@@ -521,20 +742,20 @@ def bench_dehalogenase(
     if len(records) > 1:
         print(f"\n  ΔE reaction profile (Ha, relative to frame {frame_indices[0]}):")
         print(f"  {'Frame':>5}  {'ΔE_FCI':>13}  {'ΔE_QSCI':>13}  "
-              f"{'ΔE_Maestro':>13}  {'ΔE_Qrunch_CI':>13}  {'ΔE_FAST-VQE':>13}")
+              f"{'ΔE_Maestro':>13}  {'ΔE_FAST-VQE':>13}")
         for r in records:
             print(
                 f"  {r['frame']:5d}  "
                 f"{_fd(r['e_fci'],                   e_fci0):>13}  "
                 f"{_fd(r['sqd'].get('energy'),        e_sqd0):>13}  "
                 f"{_fd(r['maestro'].get('energy'),    e_m0):>13}  "
-                f"{_fd(r['qrunch'].get('e_ci'),       e_qci0):>13}  "
-                f"{_fd(r['qrunch'].get('e_vqe'),      e_qvqe0):>13}"
+                f"{_fd(r.get('e_qvqe'),               e_qvqe0):>13}"
             )
 
     return {
         "name":           "dehalogenase",
-        "basis":          "sto-3g",
+        "basis":          basis_set,
+        "big_mode":       big,
         "charge":         -1,
         "norb":           norb,
         "nelec":          list(nelec),
@@ -571,14 +792,21 @@ examples:
     parser.add_argument("--ansatz",    type=str, default="upccd",
                         choices=["upccd", "hardware_efficient"])
     parser.add_argument("--maxiter",   type=int, default=50)
-    parser.add_argument("--norb",      type=int, default=NORB,
-                        help=f"Number of active spatial orbitals (default: {NORB} → {2*NORB} qubits); "
+    parser.add_argument("--norb",      type=int, default=None,
+                        help=f"Number of active spatial orbitals "
+                             f"(default: {NORB} standard, {BIG_NORB} with --big); "
                              "nelec is set to (norb//2, norb//2)")
     parser.add_argument("--sqd-samples", type=int, default=200,
                         help="Bitstring samples for QSCI (default: 200; "
                              "~1000 recovers FCI for this active space)")
     parser.add_argument("--no-qrunch", action="store_true",
                         help="Skip Qrunch columns")
+    parser.add_argument("--big",       action="store_true",
+                        help="Use 86-atom geometry with Qrunch projective embedding "
+                             "for ALL solvers. Defaults: norb=20 (40q), basis=pc-seg-1. "
+                             "Use --norb to scale up/down.")
+    parser.add_argument("--basis",     type=str, default=None,
+                        help=f"Basis set (default: sto-3g standard, {BIG_BASIS} with --big)")
     parser.add_argument("--output",    type=str, default=None)
     args = parser.parse_args()
 
@@ -591,13 +819,18 @@ examples:
 
     print("=" * 72)
     print("  DEHALOGENASE SN2 BENCHMARK")
-    norb  = args.norb
+
+    # Apply --big defaults for norb and basis when not explicitly set
+    norb  = args.norb  if args.norb  is not None else (BIG_NORB  if args.big else NORB)
+    basis = args.basis if args.basis is not None else (BIG_BASIS if args.big else "sto-3g")
     nelec = (norb // 2, norb // 2)
 
+    print(f"  Mode    : {'BIG (embedded)' if args.big else 'standard (isolated)'}")
     print(f"  GPU     : {'enabled' if args.gpu else 'disabled'}")
     print(f"  χ       : {args.chi}  |  ansatz : {args.ansatz}  |  maxiter : {args.maxiter}")
     print(f"  Frames  : {frame_indices or DEFAULT_FRAMES}")
     print(f"  norb    : {norb}  |  nelec : {nelec}  |  qubits : {2*norb}")
+    print(f"  Basis   : {basis}")
     print(f"  QSCI    : n_samples={args.sqd_samples}")
     print(f"  Qrunch  : {'disabled' if args.no_qrunch else 'enabled (skipped if not installed)'}")
     print(f"  Date    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -614,6 +847,8 @@ examples:
         maxiter=args.maxiter,
         run_qrunch=not args.no_qrunch,
         sqd_samples=args.sqd_samples,
+        big=args.big,
+        basis_set=basis,
     )
     total_time = time.perf_counter() - t0
 
