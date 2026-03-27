@@ -1,3 +1,3 @@
-[submodule "qiskit-addon-sqd"]
-	path = qiskit-addon-sqd
-	url = https://github.com/Qiskit/qiskit-addon-sqd.git
+[submodule "qrunch_tutorials"]
+	path = qrunch_tutorials
+	url = https://github.com/Kvantify/qrunch_tutorials.git

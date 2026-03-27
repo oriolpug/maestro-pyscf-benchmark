@@ -18,7 +18,7 @@ reaction frame:
 
   HF           — restricted Hartree-Fock (bare 5-atom subsystem, PySCF)
   FCI          — CASCI exact FCI in the active space (bare PySCF)
-  Maestro      — UpCCD MPS VQE (bare PySCF + MaestroSolver)
+  Qoro         — UpCCD MPS VQE (bare PySCF + QoroSolver)
   Qrunch CI    — FCI on the Qrunch-embedded Hamiltonian
                  (DFT env + MP2 orbitals + Pipek-Mezey + Manby projector)
   Qrunch VQE   — FAST-VQE (adaptive excitation-gate) on the embedded Hamiltonian
@@ -30,17 +30,17 @@ Modes
 
   --big: Uses the 86-atom geometry with Qrunch projective embedding.
   Qrunch builds the embedded Hamiltonian (DFT env + MP2 orbitals + Manby
-  projector), then ALL solvers (FCI, QSCI, Maestro, FAST-VQE) run on that
+  projector), then ALL solvers (FCI, QSCI, Qoro, FAST-VQE) run on that
   same active-space Hamiltonian.  Defaults: norb=20 (40 qubits), basis=pc-seg-1.
   Use --norb to scale the active space up or down.
 
-  err_M   = E_Maestro  − E_FCI       (Maestro variational error)
+  err_M   = E_Qoro     − E_FCI       (Qoro variational error)
   err_VQE = E_FAST-VQE − E_FCI       (FAST-VQE variational error)
   ΔE      = E(frame)   − E(frame 0)  (reaction energy profile)
 
 Runtime notes
 -------------
-  Maestro MPS (20q, χ=64, 50 iters) ≈ 5–15 min/frame CPU.
+  Qoro MPS (20q, χ=64, 50 iters) ≈ 5–15 min/frame CPU.
   Qrunch per frame: ~25 min first run (embedding setup, cached afterwards).
     3 frames  (default: 0, 5, 10) :  ~15–45 min  [Maestro] + ~75 min  [Qrunch first run]
     11 frames (--frames all)      :  ~1–3 hours  [Maestro] + ~4 hours [Qrunch first run]
@@ -73,7 +73,7 @@ from pyscf import gto, mcscf, scf
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from qoro_maestro_pyscf import MaestroSolver
+from qoro_pyscf import QoroSolver, QSCISolver
 
 CACHE_DIR    = Path(__file__).parent / "cache"
 QRUNCH_LICENSE = ROOT / "benchmarks/qrunch/license.txt"
@@ -177,7 +177,7 @@ def _run_casci_fci(hf, norb, nelec, timeout_s=300) -> tuple:
         signal.alarm(0)
 
 
-def _run_maestro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64, **kwargs) -> dict:
+def _run_vqe_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64, **kwargs) -> dict:
     n_qubits   = 2 * norb
     simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
     cas = mcscf.CASCI(hf, norb, nelec); cas.verbose = 0
@@ -185,7 +185,7 @@ def _run_maestro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64, **kwargs) ->
                verbose=False, **kwargs)
     if simulation == "mps":
         kw["mps_bond_dim"] = mps_bond_dim
-    cas.fcisolver = MaestroSolver(**kw)
+    cas.fcisolver = QoroSolver(**kw)
     try:
         t0     = time.perf_counter()
         energy = cas.kernel()[0]
@@ -208,7 +208,7 @@ def _run_qsci(hf, norb, nelec, num_samples: int = 200, rand_seed: int = 42) -> d
     Projects the Hamiltonian onto the subspace spanned by `num_samples`
     randomly sampled bitstrings with the correct electron count, then
     diagonalises exactly within that subspace.  Uses the same PySCF
-    active-space integrals as FCI and Maestro — all three methods are
+    active-space integrals as FCI and Qoro — all three methods are
     directly comparable.
 
     In production QSCI the bitstrings come from sampling a quantum circuit
@@ -488,17 +488,17 @@ def _run_fci_on_integrals(h1e, h2e, norb, nelec, ecore, timeout_s=300):
         signal.alarm(0)
 
 
-def _run_maestro_on_integrals(h1e, h2e, norb, nelec, ecore,
-                              ansatz, backend, mps_bond_dim=64,
-                              **kwargs) -> dict:
-    """Run Maestro directly on extracted integrals."""
+def _run_vqe_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
+                               ansatz, backend, mps_bond_dim=64,
+                               **kwargs) -> dict:
+    """Run Qoro VQE directly on extracted integrals."""
     n_qubits   = 2 * norb
     simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
     kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
               verbose=False, **kwargs)
     if simulation == "mps":
         kw["mps_bond_dim"] = mps_bond_dim
-    solver = MaestroSolver(**kw)
+    solver = QoroSolver(**kw)
     try:
         t0 = time.perf_counter()
         e_act, _ = solver.kernel(h1e, h2e, norb, nelec, ecore=0)
@@ -549,6 +549,62 @@ def _run_qsci_on_integrals(h1e, h2e, norb, nelec, ecore,
         tb = traceback.format_exc()
         print(f"\n  [QSCI] ERROR: {exc}\n{tb}")
         return {"status": "failed", "error": str(exc), "traceback": tb}
+
+
+# ── QSCI (qoro-pyscf QSCISolver) runners ─────────────────────────────────────
+
+def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
+                   n_samples=500, **kwargs) -> dict:
+    """QSCI via qoro-pyscf QSCISolver.
+
+    Runs a Qoro VQE to prepare the trial state, samples bitstrings from the
+    optimised circuit, then classically diagonalises the Hamiltonian restricted
+    to that subspace.  More accurate than random sampling when the VQE circuit
+    is a good approximation.
+    """
+    n_qubits   = 2 * norb
+    simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
+    cas = mcscf.CASCI(hf, norb, nelec); cas.verbose = 0
+    kw  = dict(ansatz=ansatz, backend=backend, simulation=simulation,
+               verbose=False, n_samples=n_samples, **kwargs)
+    if simulation == "mps":
+        kw["mps_bond_dim"] = mps_bond_dim
+    cas.fcisolver = QSCISolver(**kw)
+    try:
+        t0     = time.perf_counter()
+        energy = cas.kernel()[0]
+        return {"status": "ok", "energy": energy,
+                "time": time.perf_counter() - t0,
+                "simulation": simulation,
+                "n_samples": n_samples,
+                "converged": True}
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc),
+                "traceback": traceback.format_exc()}
+
+
+def _run_qsci_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
+                                 ansatz, backend, mps_bond_dim=64,
+                                 n_samples=500, **kwargs) -> dict:
+    """Run QSCISolver directly on extracted integrals."""
+    n_qubits   = 2 * norb
+    simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
+    kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
+              verbose=False, n_samples=n_samples, **kwargs)
+    if simulation == "mps":
+        kw["mps_bond_dim"] = mps_bond_dim
+    solver = QSCISolver(**kw)
+    try:
+        t0 = time.perf_counter()
+        e_act, _ = solver.kernel(h1e, h2e, norb, nelec, ecore=0)
+        energy = ecore + e_act
+        return {"status": "ok", "energy": energy,
+                "time": time.perf_counter() - t0,
+                "simulation": simulation,
+                "n_samples": n_samples}
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc),
+                "traceback": traceback.format_exc()}
 
 
 # ── Qiskit VQE runner ────────────────────────────────────────────────────────
@@ -693,24 +749,26 @@ def bench_dehalogenase(
     big: bool = False,
     basis_set: str = "sto-3g",
 ) -> dict:
-    """Dehalogenase SN2 — FCI / QSCI / Maestro / Qrunch CI / Qrunch VQE per frame.
+    """Dehalogenase SN2 — FCI / QSCI / Qoro / Qrunch CI / Qrunch VQE per frame.
 
     When big=True, Qrunch builds the embedded Hamiltonian (projective embedding
-    on the full 27-atom system) and ALL solvers (FCI, QSCI, Maestro, Qrunch CI,
+    on the full 27-atom system) and ALL solvers (FCI, QSCI, Qoro, Qrunch CI,
     FAST-VQE) run on that same embedded active-space Hamiltonian.  This enables
     larger active spaces (norb up to ~20) and makes all energies directly
     comparable.
     """
-    ALL_SOLVERS = {"fci", "qsci", "maestro", "qiskit_vqe", "qrunch_ci", "qrunch_vqe"}
+    ALL_SOLVERS = {"fci", "qsci_qiskit", "qsci_qoro", "vqe_qoro", "vqe_qiskit",
+                   "qrunch_ci", "qrunch_vqe"}
     if solvers is None:
         solvers = ALL_SOLVERS.copy()
-    run_fci        = "fci"        in solvers
-    run_qsci       = "qsci"       in solvers
-    run_maestro    = "maestro"    in solvers
-    run_qiskit_vqe = "qiskit_vqe" in solvers
-    run_qrunch_ci  = "qrunch_ci"  in solvers
-    run_qrunch_vqe = "qrunch_vqe" in solvers
-    need_qrunch    = run_qrunch_ci or run_qrunch_vqe
+    run_fci         = "fci"         in solvers
+    run_qsci_qiskit = "qsci_qiskit" in solvers
+    run_qsci_qoro   = "qsci_qoro"   in solvers
+    run_vqe_qoro    = "vqe_qoro"    in solvers
+    run_vqe_qiskit  = "vqe_qiskit"  in solvers
+    run_qrunch_ci   = "qrunch_ci"   in solvers
+    run_qrunch_vqe  = "qrunch_vqe"  in solvers
+    need_qrunch     = run_qrunch_ci or run_qrunch_vqe
 
     if big:
         geom_path = DEHALOGENASE_LARGE_XYZ
@@ -753,8 +811,8 @@ def bench_dehalogenase(
     print(f"  Mode    : {mode_label}  basis={basis_set}")
     print(f"  Solvers : {', '.join(solver_list)}")
     print(f"  Frames  : {frame_indices}")
-    if run_qsci:
-        print(f"  QSCI n_samples={sqd_samples} (uniform random; use --sqd-samples to tune)")
+    if run_qsci_qiskit or run_qsci_qoro:
+        print(f"  QSCI n_samples={sqd_samples} (qsci_qiskit: uniform random; qsci_qoro: circuit-guided)")
     if big:
         print(f"  All solvers use the same Qrunch-embedded Hamiltonian")
     if run_fci:
@@ -763,26 +821,29 @@ def bench_dehalogenase(
 
     # Build dynamic header
     hdr = f"\n  {'Frame':>5}  "
-    if run_fci:        hdr += f"{'FCI (Ha)':>13} {'t':>6}  "
-    if run_qsci:       hdr += f"{'QSCI (Ha)':>13} {'t':>6}  "
-    if run_fci and run_qsci:       hdr += f"{'err_SQD (Ha)':>13}  "
-    if run_maestro:    hdr += f"{'Maestro (Ha)':>13} {'t':>7}  "
-    if run_fci and run_maestro:    hdr += f"{'err_M (Ha)':>13}  "
-    if run_qiskit_vqe: hdr += f"{'Qiskit VQE (Ha)':>15} {'t':>7}  "
-    if run_fci and run_qiskit_vqe: hdr += f"{'err_QV (Ha)':>13}  "
-    if run_qrunch_ci:  hdr += f"{'Qrunch CI (Ha)':>14} {'t':>7}  "
-    if run_fci and run_qrunch_ci:  hdr += f"{'err_QCI (Ha)':>13}  "
-    if run_qrunch_vqe: hdr += f"{'FAST-VQE (Ha)':>13} {'t':>7}  "
-    if run_fci and run_qrunch_vqe: hdr += f"{'err_VQE (Ha)':>13}"
+    if run_fci:                      hdr += f"{'FCI (Ha)':>13} {'t':>6}  "
+    if run_qsci_qiskit:              hdr += f"{'QSCI-Qiskit (Ha)':>16} {'t':>6}  "
+    if run_fci and run_qsci_qiskit:  hdr += f"{'err_QSCI_Qk':>13}  "
+    if run_qsci_qoro:                hdr += f"{'QSCI-Qoro (Ha)':>14} {'t':>6}  "
+    if run_fci and run_qsci_qoro:    hdr += f"{'err_QSCI_Qr':>13}  "
+    if run_vqe_qoro:                 hdr += f"{'VQE-Qoro (Ha)':>13} {'t':>7}  "
+    if run_fci and run_vqe_qoro:     hdr += f"{'err_VQE_Qr':>13}  "
+    if run_vqe_qiskit:               hdr += f"{'VQE-Qiskit (Ha)':>15} {'t':>7}  "
+    if run_fci and run_vqe_qiskit:   hdr += f"{'err_VQE_Qk':>13}  "
+    if run_qrunch_ci:                hdr += f"{'Qrunch CI (Ha)':>14} {'t':>7}  "
+    if run_fci and run_qrunch_ci:    hdr += f"{'err_QCI (Ha)':>13}  "
+    if run_qrunch_vqe:               hdr += f"{'FAST-VQE (Ha)':>13} {'t':>7}  "
+    if run_fci and run_qrunch_vqe:   hdr += f"{'err_VQE (Ha)':>13}"
     print(hdr)
 
-    records    = []
-    e_fci0     = None
-    e_sqd0     = None
-    e_m0       = None
-    e_qv0      = None
-    e_qci0     = None
-    e_qvqe0    = None
+    records       = []
+    e_fci0        = None
+    e_sqd_qk0     = None
+    e_sqd_qr0     = None
+    e_m0          = None
+    e_qv0         = None
+    e_qci0        = None
+    e_qvqe0       = None
 
     for frame_idx in frame_indices:
         if frame_idx >= len(all_frames_full):
@@ -805,18 +866,28 @@ def bench_dehalogenase(
                 print(f"  FCI...", end="", flush=True)
                 e_fci, t_fci = _run_fci_on_integrals(h1e, h2e, norb, nelec, ecore)
 
-            sqd = {"status": "skipped"}
-            if run_qsci:
-                print(f"  QSCI...", end="", flush=True)
-                sqd = _run_qsci_on_integrals(
+            sqd_qk = {"status": "skipped"}
+            if run_qsci_qiskit:
+                print(f"  QSCI-Qiskit...", end="", flush=True)
+                sqd_qk = _run_qsci_on_integrals(
                     h1e, h2e, norb, nelec, ecore, num_samples=sqd_samples)
-            e_sqd = sqd.get("energy")
-            t_sqd = sqd.get("time")
+            e_sqd_qk = sqd_qk.get("energy")
+            t_sqd_qk = sqd_qk.get("time")
+
+            sqd_qr = {"status": "skipped"}
+            if run_qsci_qoro:
+                print(f"  QSCI-Qoro...", end="", flush=True)
+                sqd_qr = _run_qsci_qoro_on_integrals(
+                    h1e, h2e, norb, nelec, ecore, ansatz,
+                    "gpu" if gpu else "cpu",
+                    mps_bond_dim=mps_bond_dim, n_samples=sqd_samples, maxiter=maxiter)
+            e_sqd_qr = sqd_qr.get("energy")
+            t_sqd_qr = sqd_qr.get("time")
 
             mr = {"status": "skipped"}
-            if run_maestro:
-                print(f"  Maestro...", end="", flush=True)
-                mr = _run_maestro_on_integrals(
+            if run_vqe_qoro:
+                print(f"  VQE-Qoro...", end="", flush=True)
+                mr = _run_vqe_qoro_on_integrals(
                     h1e, h2e, norb, nelec, ecore, ansatz,
                     "gpu" if gpu else "cpu",
                     mps_bond_dim=mps_bond_dim, maxiter=maxiter)
@@ -824,8 +895,8 @@ def bench_dehalogenase(
             t_m = mr.get("time")
 
             qv = {"status": "skipped"}
-            if run_qiskit_vqe:
-                print(f"  Qiskit VQE...", end="", flush=True)
+            if run_vqe_qiskit:
+                print(f"  VQE-Qiskit...", end="", flush=True)
                 qv = _run_qiskit_vqe_on_integrals(
                     h1e, h2e, norb, nelec, ecore,
                     mps_bond_dim=mps_bond_dim, maxiter=maxiter)
@@ -870,25 +941,35 @@ def bench_dehalogenase(
             else:
                 print(f"  {frame_idx:5d}", end="", flush=True)
 
-            sqd = {"status": "skipped"}
-            if run_qsci:
-                print(f"  QSCI...", end="", flush=True)
-                sqd = _run_qsci(hf, norb, nelec, num_samples=sqd_samples)
-            e_sqd = sqd.get("energy")
-            t_sqd = sqd.get("time")
+            sqd_qk = {"status": "skipped"}
+            if run_qsci_qiskit:
+                print(f"  QSCI-Qiskit...", end="", flush=True)
+                sqd_qk = _run_qsci(hf, norb, nelec, num_samples=sqd_samples)
+            e_sqd_qk = sqd_qk.get("energy")
+            t_sqd_qk = sqd_qk.get("time")
+
+            sqd_qr = {"status": "skipped"}
+            if run_qsci_qoro:
+                print(f"  QSCI-Qoro...", end="", flush=True)
+                sqd_qr = _run_qsci_qoro(hf, norb, nelec, ansatz,
+                                        "gpu" if gpu else "cpu",
+                                        mps_bond_dim=mps_bond_dim,
+                                        n_samples=sqd_samples, maxiter=maxiter)
+            e_sqd_qr = sqd_qr.get("energy")
+            t_sqd_qr = sqd_qr.get("time")
 
             mr = {"status": "skipped"}
-            if run_maestro:
-                print(f"  Maestro...", end="", flush=True)
-                mr  = _run_maestro(hf, norb, nelec, ansatz,
-                                   "gpu" if gpu else "cpu",
-                                   mps_bond_dim=mps_bond_dim, maxiter=maxiter)
+            if run_vqe_qoro:
+                print(f"  VQE-Qoro...", end="", flush=True)
+                mr  = _run_vqe_qoro(hf, norb, nelec, ansatz,
+                                    "gpu" if gpu else "cpu",
+                                    mps_bond_dim=mps_bond_dim, maxiter=maxiter)
             e_m = mr.get("energy")
             t_m = mr.get("time")
 
             qv = {"status": "skipped"}
-            if run_qiskit_vqe:
-                print(f"  Qiskit VQE...", end="", flush=True)
+            if run_vqe_qiskit:
+                print(f"  VQE-Qiskit...", end="", flush=True)
                 qv = _run_qiskit_vqe(hf, norb, nelec,
                                      mps_bond_dim=mps_bond_dim, maxiter=maxiter)
             e_qv = qv.get("energy")
@@ -915,74 +996,77 @@ def bench_dehalogenase(
             t_qvqe = qvqe.get("time")
 
         # Frame-0 references for ΔE
-        if e_fci0  is None and e_fci  is not None: e_fci0  = e_fci
-        if e_sqd0  is None and e_sqd  is not None: e_sqd0  = e_sqd
-        if e_m0    is None and e_m    is not None: e_m0    = e_m
-        if e_qv0   is None and e_qv   is not None: e_qv0   = e_qv
-        if e_qci0  is None and e_qci  is not None: e_qci0  = e_qci
-        if e_qvqe0 is None and e_qvqe is not None: e_qvqe0 = e_qvqe
+        if e_fci0    is None and e_fci    is not None: e_fci0    = e_fci
+        if e_sqd_qk0 is None and e_sqd_qk is not None: e_sqd_qk0 = e_sqd_qk
+        if e_sqd_qr0 is None and e_sqd_qr is not None: e_sqd_qr0 = e_sqd_qr
+        if e_m0      is None and e_m      is not None: e_m0      = e_m
+        if e_qv0     is None and e_qv     is not None: e_qv0     = e_qv
+        if e_qci0    is None and e_qci    is not None: e_qci0    = e_qci
+        if e_qvqe0   is None and e_qvqe   is not None: e_qvqe0   = e_qvqe
 
-        err_sqd  = (e_sqd  - e_fci) if (e_sqd  is not None and e_fci is not None) else None
-        err_m    = (e_m    - e_fci) if (e_m    is not None and e_fci is not None) else None
-        err_qv   = (e_qv   - e_fci) if (e_qv   is not None and e_fci is not None) else None
-        err_qci  = (e_qci  - e_fci) if (e_qci  is not None and e_fci is not None) else None
-        err_vqe  = (e_qvqe - e_fci) if (e_qvqe is not None and e_fci is not None) else None
+        err_sqd_qk = (e_sqd_qk - e_fci) if (e_sqd_qk is not None and e_fci is not None) else None
+        err_sqd_qr = (e_sqd_qr - e_fci) if (e_sqd_qr is not None and e_fci is not None) else None
+        err_m      = (e_m      - e_fci) if (e_m      is not None and e_fci is not None) else None
+        err_qv     = (e_qv     - e_fci) if (e_qv     is not None and e_fci is not None) else None
+        err_qci    = (e_qci    - e_fci) if (e_qci    is not None and e_fci is not None) else None
+        err_vqe    = (e_qvqe   - e_fci) if (e_qvqe   is not None and e_fci is not None) else None
 
         row = f"\r  {frame_idx:5d}  "
-        if run_fci:        row += f"{_fe(e_fci)} {_ft(t_fci)}  "
-        if run_qsci:       row += f"{_fe(e_sqd)} {_ft(t_sqd)}  "
-        if run_fci and run_qsci:       row += f"{_fe(err_sqd)}  "
-        if run_maestro:    row += f"{_fe(e_m)} {_ft(t_m)}  "
-        if run_fci and run_maestro:    row += f"{_fe(err_m)}  "
-        if run_qiskit_vqe: row += f"{_fe(e_qv):>15} {_ft(t_qv)}  "
-        if run_fci and run_qiskit_vqe: row += f"{_fe(err_qv)}  "
-        if run_qrunch_ci:  row += f"{_fe(e_qci)} {_ft(t_qci)}  "
+        if run_fci:                    row += f"{_fe(e_fci)} {_ft(t_fci)}  "
+        if run_qsci_qiskit:            row += f"{_fe(e_sqd_qk)} {_ft(t_sqd_qk)}  "
+        if run_fci and run_qsci_qiskit: row += f"{_fe(err_sqd_qk)}  "
+        if run_qsci_qoro:              row += f"{_fe(e_sqd_qr)} {_ft(t_sqd_qr)}  "
+        if run_fci and run_qsci_qoro:  row += f"{_fe(err_sqd_qr)}  "
+        if run_vqe_qoro:               row += f"{_fe(e_m)} {_ft(t_m)}  "
+        if run_fci and run_vqe_qoro:   row += f"{_fe(err_m)}  "
+        if run_vqe_qiskit:             row += f"{_fe(e_qv):>15} {_ft(t_qv)}  "
+        if run_fci and run_vqe_qiskit: row += f"{_fe(err_qv)}  "
+        if run_qrunch_ci:              row += f"{_fe(e_qci)} {_ft(t_qci)}  "
         if run_fci and run_qrunch_ci:  row += f"{_fe(err_qci)}  "
-        if run_qrunch_vqe: row += f"{_fe(e_qvqe)} {_ft(t_qvqe)}  "
+        if run_qrunch_vqe:             row += f"{_fe(e_qvqe)} {_ft(t_qvqe)}  "
         if run_fci and run_qrunch_vqe: row += f"{_fe(err_vqe)}"
         print(row)
 
         records.append({
-            "frame":              frame_idx,
-            "big_mode":           big,
-            "e_fci":              e_fci,     "t_fci": t_fci,
-            "sqd":                sqd,
-            "err_sqd_ha":         err_sqd,
-            "maestro":            mr,
-            "err_maestro_ha":     err_m,
-            "qiskit_vqe":         qv,
-            "err_qiskit_vqe_ha":  err_qv,
-            "qrunch_ci":          qci,
-            "err_qrunch_ci_ha":   err_qci,
-            "qrunch_vqe":         qvqe,
-            "err_qrunch_vqe_ha":  err_vqe,
-            "delta_e_fci_ha":     (e_fci  - e_fci0)  if (e_fci  and e_fci0)  else None,
-            "delta_e_sqd_ha":     (e_sqd  - e_sqd0)  if (e_sqd  and e_sqd0)  else None,
-            "delta_e_maestro_ha": (e_m    - e_m0)    if (e_m    and e_m0)    else None,
-            "delta_e_qv_ha":      (e_qv   - e_qv0)   if (e_qv   and e_qv0)   else None,
-            "delta_e_qci_ha":     (e_qci  - e_qci0)  if (e_qci  and e_qci0)  else None,
-            "delta_e_qvqe_ha":    (e_qvqe - e_qvqe0) if (e_qvqe and e_qvqe0) else None,
+            "frame":                frame_idx,
+            "big_mode":             big,
+            "e_fci":                e_fci,      "t_fci":     t_fci,
+            "qsci_qiskit":          sqd_qk,     "err_qsci_qiskit_ha": err_sqd_qk,
+            "qsci_qoro":            sqd_qr,     "err_qsci_qoro_ha":   err_sqd_qr,
+            "vqe_qoro":             mr,         "err_vqe_qoro_ha":    err_m,
+            "vqe_qiskit":           qv,         "err_vqe_qiskit_ha":  err_qv,
+            "qrunch_ci":            qci,        "err_qrunch_ci_ha":   err_qci,
+            "qrunch_vqe":           qvqe,       "err_qrunch_vqe_ha":  err_vqe,
+            "delta_e_fci_ha":       (e_fci    - e_fci0)    if (e_fci    and e_fci0)    else None,
+            "delta_e_qsci_qk_ha":   (e_sqd_qk - e_sqd_qk0) if (e_sqd_qk and e_sqd_qk0) else None,
+            "delta_e_qsci_qr_ha":   (e_sqd_qr - e_sqd_qr0) if (e_sqd_qr and e_sqd_qr0) else None,
+            "delta_e_vqe_qoro_ha":  (e_m      - e_m0)      if (e_m      and e_m0)      else None,
+            "delta_e_vqe_qiskit_ha":(e_qv     - e_qv0)     if (e_qv     and e_qv0)     else None,
+            "delta_e_qci_ha":       (e_qci    - e_qci0)    if (e_qci    and e_qci0)    else None,
+            "delta_e_qvqe_ha":      (e_qvqe   - e_qvqe0)   if (e_qvqe   and e_qvqe0)   else None,
         })
 
     # ── ΔE reaction profile summary ───────────────────────────────────────────
     if len(records) > 1:
         de_hdr = f"  {'Frame':>5}  "
-        if run_fci:        de_hdr += f"{'ΔE_FCI':>13}  "
-        if run_qsci:       de_hdr += f"{'ΔE_QSCI':>13}  "
-        if run_maestro:    de_hdr += f"{'ΔE_Maestro':>13}  "
-        if run_qiskit_vqe: de_hdr += f"{'ΔE_Qiskit_VQE':>14}  "
-        if run_qrunch_ci:  de_hdr += f"{'ΔE_Qrunch_CI':>13}  "
-        if run_qrunch_vqe: de_hdr += f"{'ΔE_FAST-VQE':>13}"
+        if run_fci:          de_hdr += f"{'ΔE_FCI':>13}  "
+        if run_qsci_qiskit:  de_hdr += f"{'ΔE_QSCI_Qk':>13}  "
+        if run_qsci_qoro:    de_hdr += f"{'ΔE_QSCI_Qr':>13}  "
+        if run_vqe_qoro:     de_hdr += f"{'ΔE_VQE_Qr':>13}  "
+        if run_vqe_qiskit:   de_hdr += f"{'ΔE_VQE_Qk':>14}  "
+        if run_qrunch_ci:    de_hdr += f"{'ΔE_Qrunch_CI':>13}  "
+        if run_qrunch_vqe:   de_hdr += f"{'ΔE_FAST-VQE':>13}"
         print(f"\n  ΔE reaction profile (Ha, relative to frame {frame_indices[0]}):")
         print(de_hdr)
         for r in records:
             de_row = f"  {r['frame']:5d}  "
-            if run_fci:        de_row += f"{_fd(r['e_fci'],                          e_fci0):>13}  "
-            if run_qsci:       de_row += f"{_fd(r['sqd'].get('energy'),               e_sqd0):>13}  "
-            if run_maestro:    de_row += f"{_fd(r['maestro'].get('energy'),            e_m0):>13}  "
-            if run_qiskit_vqe: de_row += f"{_fd(r['qiskit_vqe'].get('energy'),        e_qv0):>14}  "
-            if run_qrunch_ci:  de_row += f"{_fd(r['qrunch_ci'].get('energy'),         e_qci0):>13}  "
-            if run_qrunch_vqe: de_row += f"{_fd(r['qrunch_vqe'].get('energy'),       e_qvqe0):>13}"
+            if run_fci:          de_row += f"{_fd(r['e_fci'],                            e_fci0):>13}  "
+            if run_qsci_qiskit:  de_row += f"{_fd(r['qsci_qiskit'].get('energy'),        e_sqd_qk0):>13}  "
+            if run_qsci_qoro:    de_row += f"{_fd(r['qsci_qoro'].get('energy'),           e_sqd_qr0):>13}  "
+            if run_vqe_qoro:     de_row += f"{_fd(r['vqe_qoro'].get('energy'),            e_m0):>13}  "
+            if run_vqe_qiskit:   de_row += f"{_fd(r['vqe_qiskit'].get('energy'),          e_qv0):>14}  "
+            if run_qrunch_ci:    de_row += f"{_fd(r['qrunch_ci'].get('energy'),           e_qci0):>13}  "
+            if run_qrunch_vqe:   de_row += f"{_fd(r['qrunch_vqe'].get('energy'),         e_qvqe0):>13}"
             print(de_row)
 
     return {
@@ -1006,14 +1090,14 @@ def bench_dehalogenase(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Dehalogenase SN2 — FCI / Maestro / Qrunch CI / Qrunch VQE",
+        description="Dehalogenase SN2 — FCI / QSCI / Qoro / Qrunch CI / Qrunch VQE",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
   poetry run python benchmarks/bench_dehalogenase.py
   poetry run python benchmarks/bench_dehalogenase.py --frames all
-  poetry run python benchmarks/bench_dehalogenase.py --solvers maestro
-  poetry run python benchmarks/bench_dehalogenase.py --solvers fci,qrunch
+  poetry run python benchmarks/bench_dehalogenase.py --solvers vqe_qoro,qsci_qoro
+  poetry run python benchmarks/bench_dehalogenase.py --solvers fci,qrunch_ci
   poetry run python benchmarks/bench_dehalogenase.py --big --norb 14
   poetry run python benchmarks/bench_dehalogenase.py --gpu
         """,
@@ -1035,8 +1119,8 @@ examples:
                              "~1000 recovers FCI for this active space)")
     parser.add_argument("--solvers",   type=str, default=None,
                         help="Comma-separated list of solvers to run "
-                             "(default: all). Choices: fci, qsci, maestro, "
-                             "qiskit_vqe, qrunch_ci, qrunch_vqe")
+                             "(default: all). Choices: fci, qsci_qiskit, qsci_qoro, "
+                             "vqe_qoro, vqe_qiskit, qrunch_ci, qrunch_vqe")
     parser.add_argument("--big",       action="store_true",
                         help="Use 86-atom geometry with Qrunch projective embedding "
                              "for ALL solvers. Defaults: norb=20 (40q), basis=pc-seg-1. "
@@ -1054,7 +1138,8 @@ examples:
         frame_indices = [int(x) for x in args.frames.split(",")]
 
     # Parse --solvers
-    valid_solvers = {"fci", "qsci", "maestro", "qrunch_ci", "qrunch_vqe"}
+    valid_solvers = {"fci", "qsci_qiskit", "qsci_qoro", "vqe_qoro", "vqe_qiskit",
+                     "qrunch_ci", "qrunch_vqe"}
     if args.solvers is not None:
         solver_set = {s.strip().lower() for s in args.solvers.split(",")}
         unknown = solver_set - valid_solvers
