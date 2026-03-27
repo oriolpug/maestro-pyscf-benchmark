@@ -551,6 +551,71 @@ def _run_qsci_on_integrals(h1e, h2e, norb, nelec, ecore,
         return {"status": "failed", "error": str(exc), "traceback": tb}
 
 
+# ── QSCI (qoro: random bitstrings + PySCF selected_ci) runners ───────────────
+
+def _random_det_strings(norb, nalpha, nbeta, num_samples, rand_seed=42):
+    """Generate random α/β determinant integers using numpy (no qiskit dependency)."""
+    rng = np.random.default_rng(rand_seed)
+    alpha_set, beta_set, seen = set(), set(), set()
+    for _ in range(num_samples * 20):
+        if len(seen) >= num_samples:
+            break
+        a_orbs = rng.choice(norb, size=nalpha, replace=False)
+        b_orbs = rng.choice(norb, size=nbeta, replace=False)
+        a_int = int(sum(1 << int(i) for i in a_orbs))
+        b_int = int(sum(1 << int(i) for i in b_orbs))
+        key = (a_int, b_int)
+        if key not in seen:
+            seen.add(key); alpha_set.add(a_int); beta_set.add(b_int)
+    return (np.array(sorted(alpha_set), dtype=np.int64),
+            np.array(sorted(beta_set), dtype=np.int64))
+
+
+def _run_qsci_qoro_sample(hf, norb, nelec, num_samples=200, rand_seed=42) -> dict:
+    """QSCI via random determinant sampling + PySCF selected_ci (no VQE)."""
+    from pyscf import ao2mo
+    from pyscf.fci import selected_ci
+    nalpha, nbeta = nelec if not isinstance(nelec, int) else (nelec // 2, nelec // 2)
+    cas = mcscf.CASCI(hf, norb, (nalpha, nbeta)); cas.verbose = 0
+    h1e, ecore = cas.get_h1eff()
+    h2e = ao2mo.restore(1, cas.get_h2eff(), norb)
+    ci_strs_a, ci_strs_b = _random_det_strings(norb, nalpha, nbeta, num_samples, rand_seed)
+    try:
+        t0 = time.perf_counter()
+        sci = selected_ci.SelectedCI()
+        sci._strs = (ci_strs_a, ci_strs_b)
+        e_elec, _ = sci.kernel(h1e, h2e, norb, (nalpha, nbeta))
+        return {"status": "ok", "energy": float(e_elec + ecore),
+                "time": time.perf_counter() - t0,
+                "n_samples": num_samples,
+                "n_det": len(ci_strs_a) * len(ci_strs_b)}
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"\n  [QSCI-Qoro-Sample] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
+
+
+def _run_qsci_qoro_sample_on_integrals(h1e, h2e, norb, nelec, ecore,
+                                        num_samples=200, rand_seed=42) -> dict:
+    """Run qoro sampled QSCI directly on extracted integrals."""
+    from pyscf.fci import selected_ci
+    nalpha, nbeta = nelec
+    ci_strs_a, ci_strs_b = _random_det_strings(norb, nalpha, nbeta, num_samples, rand_seed)
+    try:
+        t0 = time.perf_counter()
+        sci = selected_ci.SelectedCI()
+        sci._strs = (ci_strs_a, ci_strs_b)
+        e_elec, _ = sci.kernel(h1e, h2e, norb, (nalpha, nbeta))
+        return {"status": "ok", "energy": float(e_elec + ecore),
+                "time": time.perf_counter() - t0,
+                "n_samples": num_samples,
+                "n_det": len(ci_strs_a) * len(ci_strs_b)}
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"\n  [QSCI-Qoro-Sample] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
+
+
 # ── QSCI (qoro-pyscf QSCISolver) runners ─────────────────────────────────────
 
 def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
@@ -753,17 +818,18 @@ def bench_dehalogenase(
     larger active spaces (norb up to ~20) and makes all energies directly
     comparable.
     """
-    ALL_SOLVERS = {"fci", "qsci_qiskit", "qsci_qoro", "vqe_qoro", "vqe_qiskit",
-                   "qrunch_ci", "qrunch_vqe"}
+    ALL_SOLVERS = {"fci", "qsci_qiskit", "qsci_qoro", "qsci_qoro_sample",
+                   "vqe_qoro", "vqe_qiskit", "qrunch_ci", "qrunch_vqe"}
     if solvers is None:
         solvers = ALL_SOLVERS.copy()
-    run_fci         = "fci"         in solvers
-    run_qsci_qiskit = "qsci_qiskit" in solvers
-    run_qsci_qoro   = "qsci_qoro"   in solvers
-    run_vqe_qoro    = "vqe_qoro"    in solvers
-    run_vqe_qiskit  = "vqe_qiskit"  in solvers
-    run_qrunch_ci   = "qrunch_ci"   in solvers
-    run_qrunch_vqe  = "qrunch_vqe"  in solvers
+    run_fci              = "fci"              in solvers
+    run_qsci_qiskit      = "qsci_qiskit"      in solvers
+    run_qsci_qoro        = "qsci_qoro"        in solvers
+    run_qsci_qoro_sample = "qsci_qoro_sample" in solvers
+    run_vqe_qoro         = "vqe_qoro"         in solvers
+    run_vqe_qiskit       = "vqe_qiskit"       in solvers
+    run_qrunch_ci        = "qrunch_ci"        in solvers
+    run_qrunch_vqe       = "qrunch_vqe"       in solvers
     need_qrunch     = run_qrunch_ci or run_qrunch_vqe
 
     if big:
@@ -807,8 +873,8 @@ def bench_dehalogenase(
     print(f"  Mode    : {mode_label}  basis={basis_set}")
     print(f"  Solvers : {', '.join(solver_list)}")
     print(f"  Frames  : {frame_indices}")
-    if run_qsci_qiskit or run_qsci_qoro:
-        print(f"  QSCI n_samples={sqd_samples} (qsci_qiskit: uniform random; qsci_qoro: circuit-guided)")
+    if run_qsci_qiskit or run_qsci_qoro or run_qsci_qoro_sample:
+        print(f"  QSCI n_samples={sqd_samples} (qsci_qiskit: uniform random; qsci_qoro: circuit-guided; qsci_qoro_sample: uniform random+PySCF)")
     if big:
         print(f"  All solvers use the same Qrunch-embedded Hamiltonian")
     if run_fci:
@@ -818,10 +884,12 @@ def bench_dehalogenase(
     # Build dynamic header
     hdr = f"\n  {'Frame':>5}  "
     if run_fci:                      hdr += f"{'FCI (Ha)':>13} {'t':>6}  "
-    if run_qsci_qiskit:              hdr += f"{'QSCI-Qiskit (Ha)':>16} {'t':>6}  "
-    if run_fci and run_qsci_qiskit:  hdr += f"{'err_QSCI_Qk':>13}  "
-    if run_qsci_qoro:                hdr += f"{'QSCI-Qoro (Ha)':>14} {'t':>6}  "
-    if run_fci and run_qsci_qoro:    hdr += f"{'err_QSCI_Qr':>13}  "
+    if run_qsci_qiskit:                    hdr += f"{'QSCI-Qiskit (Ha)':>16} {'t':>6}  "
+    if run_fci and run_qsci_qiskit:        hdr += f"{'err_QSCI_Qk':>13}  "
+    if run_qsci_qoro:                      hdr += f"{'QSCI-Qoro (Ha)':>14} {'t':>6}  "
+    if run_fci and run_qsci_qoro:          hdr += f"{'err_QSCI_Qr':>13}  "
+    if run_qsci_qoro_sample:               hdr += f"{'QSCI-Qoro-S (Ha)':>16} {'t':>6}  "
+    if run_fci and run_qsci_qoro_sample:   hdr += f"{'err_QSCI_QrS':>13}  "
     if run_vqe_qoro:                 hdr += f"{'VQE-Qoro (Ha)':>13} {'t':>7}  "
     if run_fci and run_vqe_qoro:     hdr += f"{'err_VQE_Qr':>13}  "
     if run_vqe_qiskit:               hdr += f"{'VQE-Qiskit (Ha)':>15} {'t':>7}  "
@@ -836,6 +904,7 @@ def bench_dehalogenase(
     e_fci0        = None
     e_sqd_qk0     = None
     e_sqd_qr0     = None
+    e_sqd_qrs0    = None
     e_m0          = None
     e_qv0         = None
     e_qci0        = None
@@ -879,6 +948,14 @@ def bench_dehalogenase(
                     mps_bond_dim=mps_bond_dim, n_samples=sqd_samples, maxiter=maxiter)
             e_sqd_qr = sqd_qr.get("energy")
             t_sqd_qr = sqd_qr.get("time")
+
+            sqd_qrs = {"status": "skipped"}
+            if run_qsci_qoro_sample:
+                print(f"  QSCI-Qoro-Sample...", end="", flush=True)
+                sqd_qrs = _run_qsci_qoro_sample_on_integrals(
+                    h1e, h2e, norb, nelec, ecore, num_samples=sqd_samples)
+            e_sqd_qrs = sqd_qrs.get("energy")
+            t_sqd_qrs = sqd_qrs.get("time")
 
             mr = {"status": "skipped"}
             if run_vqe_qoro:
@@ -954,6 +1031,13 @@ def bench_dehalogenase(
             e_sqd_qr = sqd_qr.get("energy")
             t_sqd_qr = sqd_qr.get("time")
 
+            sqd_qrs = {"status": "skipped"}
+            if run_qsci_qoro_sample:
+                print(f"  QSCI-Qoro-Sample...", end="", flush=True)
+                sqd_qrs = _run_qsci_qoro_sample(hf, norb, nelec, num_samples=sqd_samples)
+            e_sqd_qrs = sqd_qrs.get("energy")
+            t_sqd_qrs = sqd_qrs.get("time")
+
             mr = {"status": "skipped"}
             if run_vqe_qoro:
                 print(f"  VQE-Qoro...", end="", flush=True)
@@ -992,16 +1076,18 @@ def bench_dehalogenase(
             t_qvqe = qvqe.get("time")
 
         # Frame-0 references for ΔE
-        if e_fci0    is None and e_fci    is not None: e_fci0    = e_fci
-        if e_sqd_qk0 is None and e_sqd_qk is not None: e_sqd_qk0 = e_sqd_qk
-        if e_sqd_qr0 is None and e_sqd_qr is not None: e_sqd_qr0 = e_sqd_qr
+        if e_fci0    is None and e_fci     is not None: e_fci0     = e_fci
+        if e_sqd_qk0 is None and e_sqd_qk  is not None: e_sqd_qk0  = e_sqd_qk
+        if e_sqd_qr0 is None and e_sqd_qr  is not None: e_sqd_qr0  = e_sqd_qr
+        if e_sqd_qrs0 is None and e_sqd_qrs is not None: e_sqd_qrs0 = e_sqd_qrs
         if e_m0      is None and e_m      is not None: e_m0      = e_m
         if e_qv0     is None and e_qv     is not None: e_qv0     = e_qv
         if e_qci0    is None and e_qci    is not None: e_qci0    = e_qci
         if e_qvqe0   is None and e_qvqe   is not None: e_qvqe0   = e_qvqe
 
-        err_sqd_qk = (e_sqd_qk - e_fci) if (e_sqd_qk is not None and e_fci is not None) else None
-        err_sqd_qr = (e_sqd_qr - e_fci) if (e_sqd_qr is not None and e_fci is not None) else None
+        err_sqd_qk  = (e_sqd_qk  - e_fci) if (e_sqd_qk  is not None and e_fci is not None) else None
+        err_sqd_qr  = (e_sqd_qr  - e_fci) if (e_sqd_qr  is not None and e_fci is not None) else None
+        err_sqd_qrs = (e_sqd_qrs - e_fci) if (e_sqd_qrs is not None and e_fci is not None) else None
         err_m      = (e_m      - e_fci) if (e_m      is not None and e_fci is not None) else None
         err_qv     = (e_qv     - e_fci) if (e_qv     is not None and e_fci is not None) else None
         err_qci    = (e_qci    - e_fci) if (e_qci    is not None and e_fci is not None) else None
@@ -1011,8 +1097,10 @@ def bench_dehalogenase(
         if run_fci:                    row += f"{_fe(e_fci)} {_ft(t_fci)}  "
         if run_qsci_qiskit:            row += f"{_fe(e_sqd_qk)} {_ft(t_sqd_qk)}  "
         if run_fci and run_qsci_qiskit: row += f"{_fe(err_sqd_qk)}  "
-        if run_qsci_qoro:              row += f"{_fe(e_sqd_qr)} {_ft(t_sqd_qr)}  "
-        if run_fci and run_qsci_qoro:  row += f"{_fe(err_sqd_qr)}  "
+        if run_qsci_qoro:                      row += f"{_fe(e_sqd_qr)} {_ft(t_sqd_qr)}  "
+        if run_fci and run_qsci_qoro:          row += f"{_fe(err_sqd_qr)}  "
+        if run_qsci_qoro_sample:               row += f"{_fe(e_sqd_qrs)} {_ft(t_sqd_qrs)}  "
+        if run_fci and run_qsci_qoro_sample:   row += f"{_fe(err_sqd_qrs)}  "
         if run_vqe_qoro:               row += f"{_fe(e_m)} {_ft(t_m)}  "
         if run_fci and run_vqe_qoro:   row += f"{_fe(err_m)}  "
         if run_vqe_qiskit:             row += f"{_fe(e_qv):>15} {_ft(t_qv)}  "
@@ -1028,14 +1116,16 @@ def bench_dehalogenase(
             "big_mode":             big,
             "e_fci":                e_fci,      "t_fci":     t_fci,
             "qsci_qiskit":          sqd_qk,     "err_qsci_qiskit_ha": err_sqd_qk,
-            "qsci_qoro":            sqd_qr,     "err_qsci_qoro_ha":   err_sqd_qr,
+            "qsci_qoro":            sqd_qr,      "err_qsci_qoro_ha":        err_sqd_qr,
+            "qsci_qoro_sample":     sqd_qrs,     "err_qsci_qoro_sample_ha": err_sqd_qrs,
             "vqe_qoro":             mr,         "err_vqe_qoro_ha":    err_m,
             "vqe_qiskit":           qv,         "err_vqe_qiskit_ha":  err_qv,
             "qrunch_ci":            qci,        "err_qrunch_ci_ha":   err_qci,
             "qrunch_vqe":           qvqe,       "err_qrunch_vqe_ha":  err_vqe,
             "delta_e_fci_ha":       (e_fci    - e_fci0)    if (e_fci    and e_fci0)    else None,
             "delta_e_qsci_qk_ha":   (e_sqd_qk - e_sqd_qk0) if (e_sqd_qk and e_sqd_qk0) else None,
-            "delta_e_qsci_qr_ha":   (e_sqd_qr - e_sqd_qr0) if (e_sqd_qr and e_sqd_qr0) else None,
+            "delta_e_qsci_qr_ha":   (e_sqd_qr  - e_sqd_qr0)  if (e_sqd_qr  and e_sqd_qr0)  else None,
+            "delta_e_qsci_qrs_ha":  (e_sqd_qrs - e_sqd_qrs0) if (e_sqd_qrs and e_sqd_qrs0) else None,
             "delta_e_vqe_qoro_ha":  (e_m      - e_m0)      if (e_m      and e_m0)      else None,
             "delta_e_vqe_qiskit_ha":(e_qv     - e_qv0)     if (e_qv     and e_qv0)     else None,
             "delta_e_qci_ha":       (e_qci    - e_qci0)    if (e_qci    and e_qci0)    else None,
@@ -1047,7 +1137,8 @@ def bench_dehalogenase(
         de_hdr = f"  {'Frame':>5}  "
         if run_fci:          de_hdr += f"{'ΔE_FCI':>13}  "
         if run_qsci_qiskit:  de_hdr += f"{'ΔE_QSCI_Qk':>13}  "
-        if run_qsci_qoro:    de_hdr += f"{'ΔE_QSCI_Qr':>13}  "
+        if run_qsci_qoro:         de_hdr += f"{'ΔE_QSCI_Qr':>13}  "
+        if run_qsci_qoro_sample:  de_hdr += f"{'ΔE_QSCI_QrS':>13}  "
         if run_vqe_qoro:     de_hdr += f"{'ΔE_VQE_Qr':>13}  "
         if run_vqe_qiskit:   de_hdr += f"{'ΔE_VQE_Qk':>14}  "
         if run_qrunch_ci:    de_hdr += f"{'ΔE_Qrunch_CI':>13}  "
@@ -1058,7 +1149,8 @@ def bench_dehalogenase(
             de_row = f"  {r['frame']:5d}  "
             if run_fci:          de_row += f"{_fd(r['e_fci'],                            e_fci0):>13}  "
             if run_qsci_qiskit:  de_row += f"{_fd(r['qsci_qiskit'].get('energy'),        e_sqd_qk0):>13}  "
-            if run_qsci_qoro:    de_row += f"{_fd(r['qsci_qoro'].get('energy'),           e_sqd_qr0):>13}  "
+            if run_qsci_qoro:         de_row += f"{_fd(r['qsci_qoro'].get('energy'),         e_sqd_qr0):>13}  "
+            if run_qsci_qoro_sample:  de_row += f"{_fd(r['qsci_qoro_sample'].get('energy'), e_sqd_qrs0):>13}  "
             if run_vqe_qoro:     de_row += f"{_fd(r['vqe_qoro'].get('energy'),            e_m0):>13}  "
             if run_vqe_qiskit:   de_row += f"{_fd(r['vqe_qiskit'].get('energy'),          e_qv0):>14}  "
             if run_qrunch_ci:    de_row += f"{_fd(r['qrunch_ci'].get('energy'),           e_qci0):>13}  "
@@ -1134,8 +1226,8 @@ examples:
         frame_indices = [int(x) for x in args.frames.split(",")]
 
     # Parse --solvers
-    valid_solvers = {"fci", "qsci_qiskit", "qsci_qoro", "vqe_qoro", "vqe_qiskit",
-                     "qrunch_ci", "qrunch_vqe"}
+    valid_solvers = {"fci", "qsci_qiskit", "qsci_qoro", "qsci_qoro_sample",
+                     "vqe_qoro", "vqe_qiskit", "qrunch_ci", "qrunch_vqe"}
     if args.solvers is not None:
         solver_set = {s.strip().lower() for s in args.solvers.split(",")}
         unknown = solver_set - valid_solvers
