@@ -555,13 +555,7 @@ def _run_qsci_on_integrals(h1e, h2e, norb, nelec, ecore,
 
 def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
                    n_samples=500, **kwargs) -> dict:
-    """QSCI via qoro-pyscf QSCISolver.
-
-    Runs a Qoro VQE to prepare the trial state, samples bitstrings from the
-    optimised circuit, then classically diagonalises the Hamiltonian restricted
-    to that subspace.  More accurate than random sampling when the VQE circuit
-    is a good approximation.
-    """
+    """QSCI via qoro-pyscf QSCISolver (VQE trial state + selected-CI diagonalization)."""
     n_qubits   = 2 * norb
     simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
     cas = mcscf.CASCI(hf, norb, nelec); cas.verbose = 0
@@ -571,16 +565,13 @@ def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
     if simulation == "mps":
         qoro_kw["mps_bond_dim"] = mps_bond_dim
     inner = QoroSolver(**qoro_kw)
-    cas.fcisolver = QSCISolver(inner_solver=inner, n_samples=n_samples,
-                               verbose=False)
+    cas.fcisolver = QSCISolver(inner_solver=inner, n_samples=n_samples, verbose=False)
     try:
         t0     = time.perf_counter()
         energy = cas.kernel()[0]
         return {"status": "ok", "energy": energy,
                 "time": time.perf_counter() - t0,
-                "simulation": simulation,
-                "n_samples": n_samples,
-                "converged": True}
+                "simulation": simulation, "n_samples": n_samples, "converged": True}
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"\n  [QSCI-Qoro] ERROR: {exc}\n{tb}")
@@ -590,7 +581,7 @@ def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
 def _run_qsci_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
                                  ansatz, backend, mps_bond_dim=64,
                                  n_samples=500, **kwargs) -> dict:
-    """Run QSCISolver directly on extracted integrals."""
+    """Run QSCISolver directly on extracted integrals (big molecule / Qrunch path)."""
     n_qubits   = 2 * norb
     simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
     qoro_kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
@@ -598,16 +589,14 @@ def _run_qsci_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
     if simulation == "mps":
         qoro_kw["mps_bond_dim"] = mps_bond_dim
     inner = QoroSolver(**qoro_kw)
-    solver = QSCISolver(inner_solver=inner, n_samples=n_samples,
-                        verbose=False)
+    solver = QSCISolver(inner_solver=inner, n_samples=n_samples, verbose=False)
     try:
         t0 = time.perf_counter()
         e_act, _ = solver.kernel(h1e, h2e, norb, nelec, ecore=0)
         energy = ecore + e_act
         return {"status": "ok", "energy": energy,
                 "time": time.perf_counter() - t0,
-                "simulation": simulation,
-                "n_samples": n_samples}
+                "simulation": simulation, "n_samples": n_samples}
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"\n  [QSCI-Qoro] ERROR: {exc}\n{tb}")
