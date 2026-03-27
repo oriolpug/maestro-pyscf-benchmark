@@ -565,11 +565,14 @@ def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
     n_qubits   = 2 * norb
     simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
     cas = mcscf.CASCI(hf, norb, nelec); cas.verbose = 0
-    kw  = dict(ansatz=ansatz, backend=backend, simulation=simulation,
-               verbose=False, n_samples=n_samples, **kwargs)
+    cas.canonicalization = False
+    qoro_kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
+                   verbose=False, **kwargs)
     if simulation == "mps":
-        kw["mps_bond_dim"] = mps_bond_dim
-    cas.fcisolver = QSCISolver(**kw)
+        qoro_kw["mps_bond_dim"] = mps_bond_dim
+    inner = QoroSolver(**qoro_kw)
+    cas.fcisolver = QSCISolver(inner_solver=inner, n_samples=n_samples,
+                               verbose=False)
     try:
         t0     = time.perf_counter()
         energy = cas.kernel()[0]
@@ -579,8 +582,9 @@ def _run_qsci_qoro(hf, norb, nelec, ansatz, backend, mps_bond_dim=64,
                 "n_samples": n_samples,
                 "converged": True}
     except Exception as exc:
-        return {"status": "failed", "error": str(exc),
-                "traceback": traceback.format_exc()}
+        tb = traceback.format_exc()
+        print(f"\n  [QSCI-Qoro] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
 
 
 def _run_qsci_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
@@ -589,11 +593,13 @@ def _run_qsci_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
     """Run QSCISolver directly on extracted integrals."""
     n_qubits   = 2 * norb
     simulation = "statevector" if n_qubits <= SV_QUBIT_LIMIT else "mps"
-    kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
-              verbose=False, n_samples=n_samples, **kwargs)
+    qoro_kw = dict(ansatz=ansatz, backend=backend, simulation=simulation,
+                   verbose=False, **kwargs)
     if simulation == "mps":
-        kw["mps_bond_dim"] = mps_bond_dim
-    solver = QSCISolver(**kw)
+        qoro_kw["mps_bond_dim"] = mps_bond_dim
+    inner = QoroSolver(**qoro_kw)
+    solver = QSCISolver(inner_solver=inner, n_samples=n_samples,
+                        verbose=False)
     try:
         t0 = time.perf_counter()
         e_act, _ = solver.kernel(h1e, h2e, norb, nelec, ecore=0)
@@ -603,8 +609,9 @@ def _run_qsci_qoro_on_integrals(h1e, h2e, norb, nelec, ecore,
                 "simulation": simulation,
                 "n_samples": n_samples}
     except Exception as exc:
-        return {"status": "failed", "error": str(exc),
-                "traceback": traceback.format_exc()}
+        tb = traceback.format_exc()
+        print(f"\n  [QSCI-Qoro] ERROR: {exc}\n{tb}")
+        return {"status": "failed", "error": str(exc), "traceback": tb}
 
 
 # ── Qiskit VQE runner ────────────────────────────────────────────────────────
